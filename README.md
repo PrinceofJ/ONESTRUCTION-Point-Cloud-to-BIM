@@ -1,0 +1,3 @@
+Point Cloud Scans to BIM/IFC4
+
+TODO FINISH README
