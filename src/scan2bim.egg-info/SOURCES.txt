@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+src/scan2bim/__init__.py
+src/scan2bim/cli.py
+src/scan2bim/config.py
+src/scan2bim/ifc_export.py
+src/scan2bim/io.py
+src/scan2bim/room_segmentation.py
+src/scan2bim/viz.py
+src/scan2bim/wall_image_processing.py
+src/scan2bim/wall_segmentation.py
+src/scan2bim.egg-info/PKG-INFO
+src/scan2bim.egg-info/SOURCES.txt
+src/scan2bim.egg-info/dependency_links.txt
+src/scan2bim.egg-info/entry_points.txt
+src/scan2bim.egg-info/requires.txt
+src/scan2bim.egg-info/top_level.txt

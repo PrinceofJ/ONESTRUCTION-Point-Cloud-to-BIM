@@ -1,0 +1,103 @@
+# scan2bim default configuration
+# Override any value via CLI flags or by editing this file and passing -c config.yaml
+
+input_path: cloud.ply
+out_dir: scan2bim_out
+output_ifc: model.ifc
+
+room_seg:
+  units_per_meter: 1.0
+  up_axis: 2
+  voxel_m: 0.02
+
+  # slab extraction
+  slab_relative_to: ceiling
+  slab_lo_m: 0.1
+  slab_hi_m: 1.5
+  ceiling_mode: local_perpoint
+  ceiling_cell_size_m: 0.1
+  ceiling_min_pts_per_cell: 5
+  ceiling_smooth_cells: 3
+
+  # rasterisation
+  pixel_m: 0.05
+  min_points_per_cell: 3
+  thicken_px: 1
+  use_wallness: false
+
+  # watershed
+  min_wall_area_px: 60
+  marker_h_m: 0.10
+  footprint_close_m: 1.00
+  merge_ridge_m: 0.70
+  min_room_area_m2: 1.0
+
+  # void rejection
+  drop_empty_rooms: true
+  min_coverage_frac: 0.25
+
+  # SAM recall (set use_sam_recall: false to disable)
+  use_sam_recall: true
+  sam_arch: vit_h
+  sam_ckpt: sam_vit_h.pth
+
+  # 3D export
+  do_buffer_m: 0.05
+  wall_floor_margin_m: 0.10
+  wall_ceiling_margin_m: 0.10
+
+wall_seg:
+  up_axis: 2
+  voxel_m: 0.02
+  normal_tol_deg: 15.0
+  angle_tol_deg: 10.0
+  offset_tol_m: 0.20
+  min_wall_points: 200
+
+  # wall image rasterisation
+  flat_pixel_m: 0.04
+  morph_close_px: 5
+  morph_open_px: 3
+
+  # statistical outlier removal
+  sor_neighbours: 20
+  sor_std_ratio: 2.0
+
+wall_proc:
+  pixel_m: 0.04
+
+  # SAM
+  sam_checkpoint: sam_vit_b_01ec64.pth
+  sam_model_type: vit_b
+  sam_upscale: 4
+  sam_points_per_void: 5
+
+  # detection thresholds
+  min_void_px: 40
+  min_rectangularity: 0.55
+
+  # door dimensions (metres)
+  door_min_width_m: 0.50
+  door_max_width_m: 1.60
+  door_min_height_m: 1.50
+  door_max_height_m: 2.80
+  door_floor_margin_px: 3
+
+  # window dimensions (metres)
+  window_min_width_m: 0.30
+  window_max_width_m: 2.50
+  window_min_height_m: 0.30
+  window_max_height_m: 2.00
+  window_min_sill_m: 0.30
+
+ifc_export:
+  min_directions: 2
+  max_wall_length_m: 15.0
+  default_thickness: 0.15
+  max_merge_thickness: 0.35
+  dedup_offset_tol: 0.20
+  dedup_overlap_frac: 0.30
+  project_name: Scanned Building
+  floor_elevation: 0.0
+  add_floor_slabs: true
+  slab_thickness: 0.2

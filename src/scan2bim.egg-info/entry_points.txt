@@ -1,0 +1,2 @@
+[console_scripts]
+scan2bim = scan2bim.cli:main
