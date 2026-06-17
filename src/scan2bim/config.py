@@ -153,12 +153,18 @@ class IfcExportConfig:
     min_wall_length_m: float = 0.3
     max_wall_length_m: float = 15.0
     min_wall_aspect_ratio: float = 0.15
+    max_wall_thickness_m: float = 0.40
+    min_wall_fill_ratio: float = 0.15
 
     # merge / dedup
     default_thickness: float = 0.15
+    exterior_thickness: float = 0.30
     max_merge_thickness: float = 0.35
-    dedup_offset_tol: float = 0.12
-    dedup_overlap_frac: float = 0.30
+    dedup_offset_tol: float = 0.15
+    dedup_overlap_frac: float = 0.10
+
+    # endpoint snapping
+    snap_tolerance_m: float = 0.15
 
     # IFC output
     project_name: str = "Scanned Building"

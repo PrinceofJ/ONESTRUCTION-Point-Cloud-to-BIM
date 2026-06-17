@@ -82,11 +82,13 @@ def run(input_path, out_dir, config_path, no_sam, no_ifc, verbose):
     run_wall_image_processing(wall_image_dir, cfg.wall_proc, openings_dir, use_sam=not no_sam)
 
     click.echo("[4/4] IFC export")
-    building_json = build_building_json(room_cloud_paths, openings_dir, cfg.wall_seg, cfg.ifc_export)
+    building_json = build_building_json(room_cloud_paths, openings_dir, cfg.wall_seg, cfg.ifc_export,
+                                           wall_image_dir=wall_image_dir)
 
     json_path = os.path.join(out_dir, "building.json")
+    serializable = {k: v for k, v in building_json.items() if k != "_debug"}
     with open(json_path, "w") as f:
-        json.dump(building_json, f, indent=2)
+        json.dump(serializable, f, indent=2)
     click.echo(f"  → JSON: {json_path}")
     click.echo(f"    {len(building_json['walls'])} walls, "
                f"{len(building_json['doors'])} doors, "
@@ -198,8 +200,9 @@ def ifc_export(room_cloud_dir, openings_dir, output, config_path, verbose):
     building_json = build_building_json(paths, openings_dir, cfg.wall_seg, cfg.ifc_export)
 
     json_path = output.replace(".ifc", ".json")
+    serializable = {k: v for k, v in building_json.items() if k != "_debug"}
     with open(json_path, "w") as f:
-        json.dump(building_json, f, indent=2)
+        json.dump(serializable, f, indent=2)
     click.echo(f"JSON → {json_path}")
 
     try:
@@ -212,6 +215,34 @@ def ifc_export(room_cloud_dir, openings_dir, output, config_path, verbose):
     except ImportError:
         click.echo("ifcopenshell not installed — skipping IFC export.")
         click.echo("Install with: pip install scan2bim[ifc]")
+
+
+@main.command("debug-walls")
+@click.argument("room_cloud_dir", type=click.Path(exists=True))
+@click.option("--openings-dir", default=None, help="Openings JSON directory.")
+@click.option("-c", "--config", "config_path", default=None, help="YAML config file.")
+@click.option("--save", "save_path", default=None, help="Save debug plot to file instead of showing.")
+@click.option("-v", "--verbose", is_flag=True)
+def debug_walls(room_cloud_dir, openings_dir, config_path, save_path, verbose):
+    """Show diagnostic view of wall generation at each pipeline stage."""
+    _setup_logging(verbose)
+    cfg = _load_config(config_path)
+
+    from .ifc_export import build_building_json
+    from .viz import show_wall_debug, show_wall_detail_table
+
+    paths = sorted(glob.glob(os.path.join(room_cloud_dir, "room_*_walls.ply")))
+    if not paths:
+        paths = sorted(glob.glob(os.path.join(room_cloud_dir, "*.ply")))
+    if not paths:
+        click.echo(f"No .ply files found in {room_cloud_dir}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Building wall data from {len(paths)} room clouds...")
+    building_json = build_building_json(paths, openings_dir, cfg.wall_seg, cfg.ifc_export)
+
+    show_wall_detail_table(building_json)
+    show_wall_debug(building_json, save_path=save_path)
 
 
 @main.command("dump-config")

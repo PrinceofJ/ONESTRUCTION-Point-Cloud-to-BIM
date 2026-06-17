@@ -89,6 +89,109 @@ def show_wall_images(flats, room_name="", cols=3):
     plt.show()
 
 
+def show_wall_debug(building_json, save_path=None):
+    """Show a multi-stage diagnostic view of wall generation.
+
+    Requires building_json to contain '_debug' (set by build_building_json).
+    Shows: raw segments, after filtering, after merge, and final deduped.
+    """
+    import math
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    debug = building_json.get("_debug", {})
+    if not debug:
+        print("No debug data — re-run build_building_json to populate _debug.")
+        return
+
+    room_colors = plt.get_cmap("tab10")
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 14))
+    titles = ["1) Raw segments (per room)", "2) After length/aspect filter",
+              "3) After merge_wall_faces", "4) Final (after dedup)"]
+
+    for ax, title in zip(axes.flat, titles):
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlabel("X (m)")
+        ax.set_ylabel("Y (m)")
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.grid(True, alpha=0.2)
+
+    def _draw_walls(ax, geos, color, alpha=0.6, lw=1.5, label=None):
+        for i, g in enumerate(geos):
+            sx, sy = g["start"]
+            ex, ey = g["end"]
+            ax.plot([sx, ex], [sy, ey], "-", color=color, alpha=alpha, linewidth=lw,
+                    label=label if i == 0 else None)
+            ax.plot(sx, sy, "o", color=color, alpha=alpha, markersize=3)
+            ax.plot(ex, ey, "o", color=color, alpha=alpha, markersize=3)
+
+    total_counts = [0, 0, 0, 0]
+    for ri, (room_name, rd) in enumerate(sorted(debug.items())):
+        c = room_colors(ri % 10)
+
+        _draw_walls(axes[0, 0], rd["raw_geos"], c, label=room_name)
+        total_counts[0] += len(rd["raw_geos"])
+
+        _draw_walls(axes[0, 1], rd["filtered_geos"], c, label=room_name)
+        total_counts[1] += len(rd["filtered_geos"])
+
+        _draw_walls(axes[1, 0], rd["merged_geos"], c, label=room_name)
+        total_counts[2] += len(rd["merged_geos"])
+
+    final_walls = building_json.get("walls", [])
+    for w in final_walls:
+        sx, sy = w["start"]
+        ex, ey = w["end"]
+        axes[1, 1].plot([sx, ex], [sy, ey], "k-", linewidth=2)
+        axes[1, 1].plot(sx, sy, "ko", markersize=3)
+        axes[1, 1].plot(ex, ey, "ko", markersize=3)
+    total_counts[3] = len(final_walls)
+
+    for ax, title, count in zip(axes.flat, titles, total_counts):
+        ax.set_title(f"{title} — {count} walls", fontsize=12, fontweight="bold")
+        ax.legend(fontsize=7, loc="upper right", ncol=2)
+
+    fig.suptitle(
+        f"Wall Pipeline Debug — {len(debug)} rooms",
+        fontsize=14, fontweight="bold", y=0.98,
+    )
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Debug plot saved to {save_path}")
+    plt.show()
+
+
+def show_wall_detail_table(building_json):
+    """Print a per-room summary table of wall counts at each stage."""
+    debug = building_json.get("_debug", {})
+    if not debug:
+        print("No debug data available.")
+        return
+
+    print(f"\n{'Room':<20} {'Seg':>4} {'Dirs':>5} {'Raw':>4} {'Filt':>5} "
+          f"{'Kept':>5} {'Merged':>7}")
+    print("-" * 65)
+    totals = [0, 0, 0, 0, 0, 0]
+    for room_name in sorted(debug):
+        rd = debug[room_name]
+        vals = [rd["n_segments"], rd["n_directions"], rd["n_raw_geos"],
+                rd["n_filtered"], rd["n_after_filter"], rd["n_after_merge"]]
+        print(f"{room_name:<20} {vals[0]:>4} {vals[1]:>5} {vals[2]:>4} "
+              f"{vals[3]:>5} {vals[4]:>5} {vals[5]:>7}")
+        for i in range(6):
+            totals[i] += vals[i]
+
+    print("-" * 65)
+    print(f"{'TOTAL':<20} {totals[0]:>4} {'':>5} {totals[2]:>4} "
+          f"{totals[3]:>5} {totals[4]:>5} {totals[5]:>7}")
+
+    final_count = len(building_json.get("walls", []))
+    print(f"\nAfter dedup: {totals[5]} → {final_count} walls "
+          f"(removed {totals[5] - final_count})\n")
+
+
 def show_floor_plan(building_json):
     """Quick top-down floor-plan sketch from the building JSON."""
     import math

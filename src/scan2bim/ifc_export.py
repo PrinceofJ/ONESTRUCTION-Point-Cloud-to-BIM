@@ -77,60 +77,25 @@ def _assign_to_nearest_peak(theta, peak_centres):
 
 
 def segment_walls_for_ifc(pcd, wall_seg_cfg: WallSegConfig):
-    """Segment walls from a room cloud (returns walls list + n_directions)."""
-    up_axis = wall_seg_cfg.up_axis
-    if len(pcd.points) < wall_seg_cfg.min_wall_points:
-        return [], 0
+    """Segment walls from a room cloud (returns walls list + n_directions).
 
-    pcd.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(
-            radius=wall_seg_cfg.normal_radius_m, max_nn=wall_seg_cfg.normal_max_nn,
-        )
-    )
-    pts = np.asarray(pcd.points)
-    norms = np.asarray(pcd.normals)
-    up = np.zeros(3)
-    up[up_axis] = 1.0
-    sin_tol = np.sin(np.deg2rad(wall_seg_cfg.normal_tol_deg))
-    vert_mask = np.abs(norms @ up) < sin_tol
-    pts_v = pts[vert_mask]
-    norms_v = norms[vert_mask]
-    if len(pts_v) < wall_seg_cfg.min_wall_points:
-        return [], 0
+    Delegates to wall_segmentation.segment_walls so that wall ordering
+    matches the wall images used for opening detection.
+    """
+    from .wall_segmentation import segment_walls
 
-    ha, hb = [a for a in range(3) if a != up_axis]
-    nh = norms_v[:, [ha, hb]].copy()
-    nh /= np.linalg.norm(nh, axis=1, keepdims=True) + 1e-9
-    theta = np.arctan2(nh[:, 1], nh[:, 0]) % np.pi
-
-    peak_centres = _find_angle_peaks(theta)
-    n_directions = len(peak_centres)
-    if n_directions == 0:
-        return [], 0
-
-    angle_labels = _assign_to_nearest_peak(theta, peak_centres)
-    walls = []
-    for a_label in range(n_directions):
-        a_mask = angle_labels == a_label
-        a_pts = pts_v[a_mask]
-        a_nh = nh[a_mask]
-        mean_n = a_nh.mean(axis=0)
-        mean_n /= np.linalg.norm(mean_n) + 1e-9
-        offsets = a_pts[:, ha] * mean_n[0] + a_pts[:, hb] * mean_n[1]
-        off_labels = _cluster_1d_gaps(offsets, wall_seg_cfg.offset_tol_m)
-        ifc_min_pts = max(wall_seg_cfg.min_wall_points, 500)
-        for o_label in np.unique(off_labels):
-            o_mask = off_labels == o_label
-            wall_pts = a_pts[o_mask]
-            if len(wall_pts) < ifc_min_pts:
-                continue
-            cloud = o3d.geometry.PointCloud()
-            cloud.points = o3d.utility.Vector3dVector(wall_pts)
-            walls.append({
-                "cloud": cloud,
-                "normal_2d": mean_n.copy(),
-                "offset": float(offsets[o_mask].mean()),
-            })
+    walls = segment_walls(pcd, wall_seg_cfg)
+    n_directions = 0
+    if walls and "_theta_peaks" in walls[0]:
+        n_directions = len(walls[0]["_theta_peaks"])
+    elif walls:
+        up_axis = wall_seg_cfg.up_axis
+        ha, hb = [a for a in range(3) if a != up_axis]
+        angles = set()
+        for w in walls:
+            a = round(float(np.arctan2(w["normal_2d"][1], w["normal_2d"][0]) % np.pi), 2)
+            angles.add(a)
+        n_directions = len(angles)
     return walls, n_directions
 
 
@@ -162,6 +127,26 @@ def compute_wall_geometry(wall, up_axis=2):
     offset = wall["offset"]
     thickness = float(np.percentile(n_vals, 95) - np.percentile(n_vals, 5))
 
+    n_centered = n_vals - offset
+    pos_frac = float(np.mean(n_centered > 0.02))
+    neg_frac = float(np.mean(n_centered < -0.02))
+    minority = min(pos_frac, neg_frac)
+    is_exterior = minority < 0.10
+
+    cell_size = 0.10
+    u_range = u_max - u_min
+    v_range = v_max - v_min
+    if u_range > cell_size and v_range > cell_size:
+        n_u = max(1, int(u_range / cell_size))
+        n_v = max(1, int(v_range / cell_size))
+        u_idx = np.clip(((u - u_min) / u_range * n_u).astype(int), 0, n_u - 1)
+        v_idx = np.clip(((v - v_min) / v_range * n_v).astype(int), 0, n_v - 1)
+        grid = np.zeros((n_v, n_u), dtype=bool)
+        grid[v_idx, u_idx] = True
+        fill_ratio = float(grid.sum()) / float(grid.size)
+    else:
+        fill_ratio = 1.0
+
     start_2d = [
         float(u_min * u_axis[0] + offset * normal_3d[0]),
         float(u_min * u_axis[1] + offset * normal_3d[1]),
@@ -178,6 +163,8 @@ def compute_wall_geometry(wall, up_axis=2):
         "u_axis": u_axis.tolist(), "normal_3d": normal_3d.tolist(),
         "normal_2d": n2d.tolist(), "offset": offset,
         "angle": float(np.arctan2(n2d[1], n2d[0]) % np.pi),
+        "fill_ratio": fill_ratio,
+        "is_exterior": is_exterior,
     }
 
 
@@ -188,6 +175,15 @@ def compute_wall_geometry(wall, up_axis=2):
 def _angle_close(a1, a2, tol_rad):
     diff = abs(a1 - a2)
     return min(diff, np.pi - diff) < tol_rad
+
+
+def _walls_spatially_close(g1, g2, tol=0.5):
+    s1, e1 = np.array(g1["start"]), np.array(g1["end"])
+    s2, e2 = np.array(g2["start"]), np.array(g2["end"])
+    if (min(g1["u_max"], g2["u_max"]) - max(g1["u_min"], g2["u_min"])) > 0:
+        return True
+    return (np.linalg.norm(s1 - s2) < tol or np.linalg.norm(s1 - e2) < tol
+            or np.linalg.norm(e1 - s2) < tol or np.linalg.norm(e1 - e2) < tol)
 
 
 def merge_wall_faces(wall_geos, cfg: IfcExportConfig, angle_tol_deg: float = 10.0):
@@ -212,6 +208,8 @@ def merge_wall_faces(wall_geos, cfg: IfcExportConfig, angle_tol_deg: float = 10.
                 continue
             if abs(wall_geos[i]["offset"] - wall_geos[j]["offset"]) > cfg.max_merge_thickness:
                 continue
+            if not _walls_spatially_close(wall_geos[i], wall_geos[j]):
+                continue
             u_overlap = (min(wall_geos[i]["u_max"], wall_geos[j]["u_max"])
                          - max(wall_geos[i]["u_min"], wall_geos[j]["u_min"]))
             min_len = min(wall_geos[i]["length"], wall_geos[j]["length"])
@@ -225,9 +223,10 @@ def merge_wall_faces(wall_geos, cfg: IfcExportConfig, angle_tol_deg: float = 10.
 
     merged = []
     for indices in groups.values():
+        raw_indices = [wall_geos[i].get("_raw_idx", i) for i in indices]
         if len(indices) == 1:
             g = wall_geos[indices[0]].copy()
-            g["source_indices"] = indices
+            g["source_indices"] = raw_indices
             if g["thickness"] < 0.05:
                 g["thickness"] = cfg.default_thickness
             merged.append(g)
@@ -237,8 +236,9 @@ def merge_wall_faces(wall_geos, cfg: IfcExportConfig, angle_tol_deg: float = 10.
             thickness = max(abs(g["offset"] - avg_offset) * 2 for g in geos)
             if thickness < 0.05:
                 thickness = cfg.default_thickness
-            u_min = min(g["u_min"] for g in geos)
-            u_max = max(g["u_max"] for g in geos)
+            longest = max(geos, key=lambda g: g["length"])
+            u_min = longest["u_min"]
+            u_max = longest["u_max"]
             height = max(g["height"] for g in geos)
             floor_z = min(g["floor_z"] for g in geos)
             ref = geos[0]
@@ -259,7 +259,9 @@ def merge_wall_faces(wall_geos, cfg: IfcExportConfig, angle_tol_deg: float = 10.
                 "u_min": u_min, "u_max": u_max,
                 "u_axis": ref["u_axis"], "normal_3d": ref["normal_3d"],
                 "normal_2d": ref["normal_2d"], "offset": float(avg_offset),
-                "angle": ref["angle"], "source_indices": indices,
+                "angle": ref["angle"], "source_indices": raw_indices,
+                "fill_ratio": max(g.get("fill_ratio", 0) for g in geos),
+                "is_exterior": any(g.get("is_exterior", False) for g in geos),
             })
     return merged
 
@@ -302,17 +304,22 @@ def deduplicate_walls(all_room_walls, cfg: IfcExportConfig, angle_tol_deg: float
     angle_tol = np.deg2rad(angle_tol_deg)
     for i in range(n):
         for j in range(i + 1, n):
-            if flat[i]["_room"] == flat[j]["_room"]:
-                continue
             if not _angle_close(flat[i]["angle"], flat[j]["angle"], angle_tol):
                 continue
             if abs(flat[i]["offset"] - flat[j]["offset"]) > cfg.dedup_offset_tol:
                 continue
-            u_overlap = (min(flat[i]["u_max"], flat[j]["u_max"])
-                         - max(flat[i]["u_min"], flat[j]["u_min"]))
-            min_len = min(flat[i]["length"], flat[j]["length"])
-            if min_len <= 0 or u_overlap / min_len < cfg.dedup_overlap_frac:
+            if not _walls_spatially_close(flat[i], flat[j]):
                 continue
+            u_gap = max(flat[i]["u_min"], flat[j]["u_min"]) - min(flat[i]["u_max"], flat[j]["u_max"])
+            if u_gap > cfg.dedup_offset_tol:
+                continue
+            logger.debug(
+                "  DEDUP MERGE: %s[%d] (len=%.2f) + %s[%d] (len=%.2f)  "
+                "off_diff=%.3f  u_gap=%.2f",
+                flat[i]["_room"], flat[i]["_idx"], flat[i]["length"],
+                flat[j]["_room"], flat[j]["_idx"], flat[j]["length"],
+                abs(flat[i]["offset"] - flat[j]["offset"]), u_gap,
+            )
             union(i, j)
 
     groups: dict[int, list[int]] = {}
@@ -383,39 +390,84 @@ def load_openings(openings_dir: str):
     return rooms, pixel_m
 
 
-def attach_openings(merged_walls, source_wall_count, room_openings, pixel_m):
+def _match_wall_to_merged(wall_meta_entry, merged_walls, angle_tol_deg=15.0, offset_tol=0.30):
+    """Find the merged wall that best matches a source wall by angle and offset."""
+    src_n = np.array(wall_meta_entry["normal_2d"])
+    src_angle = float(np.arctan2(src_n[1], src_n[0]) % np.pi)
+    src_offset = wall_meta_entry["offset"]
+    src_u_min = wall_meta_entry["u_min"]
+    src_u_max = wall_meta_entry["u_max"]
+    angle_tol = np.deg2rad(angle_tol_deg)
+
+    best_idx = None
+    best_score = float("inf")
+    for mi, mw in enumerate(merged_walls):
+        mw_angle = mw.get("angle", float(np.arctan2(mw["normal_2d"][1], mw["normal_2d"][0]) % np.pi))
+        angle_diff = abs(mw_angle - src_angle)
+        angle_diff = min(angle_diff, np.pi - angle_diff)
+        if angle_diff > angle_tol:
+            continue
+        off_diff = abs(mw["offset"] - src_offset)
+        if off_diff > offset_tol:
+            continue
+        u_overlap = min(src_u_max, mw["u_max"]) - max(src_u_min, mw["u_min"])
+        if u_overlap < -offset_tol:
+            continue
+        score = off_diff + angle_diff
+        if score < best_score:
+            best_score = score
+            best_idx = mi
+    return best_idx
+
+
+def attach_openings(merged_walls, wall_meta, room_openings, pixel_m):
     for mw in merged_walls:
         mw["_openings"] = []
 
-    wall_name_to_index = {}
-    for entry in room_openings:
-        name = entry.get("wall", "")
-        idx = int(name.replace("wall_", "")) - 1 if name.startswith("wall_") else -1
-        wall_name_to_index[name] = idx
+    wall_meta_by_name = {}
+    for wm in wall_meta:
+        wall_meta_by_name[wm["name"]] = wm
 
-    seg_idx_to_merged = {}
-    for mi, mw in enumerate(merged_walls):
-        for si in mw.get("source_indices", []):
-            seg_idx_to_merged[si] = mi
+    use_geo_match = len(wall_meta_by_name) > 0
 
     for entry in room_openings:
         wall_name = entry.get("wall", "")
-        seg_idx = wall_name_to_index.get(wall_name, -1)
-        merged_idx = seg_idx_to_merged.get(seg_idx)
-        if merged_idx is None:
-            continue
+
+        if use_geo_match:
+            wm = wall_meta_by_name.get(wall_name)
+            if wm is None:
+                continue
+            merged_idx = _match_wall_to_merged(wm, merged_walls)
+            if merged_idx is None:
+                logger.debug("  Opening on %s: no matching merged wall found", wall_name)
+                continue
+            src_u_min = wm["u_min"]
+            u_shift = src_u_min - merged_walls[merged_idx]["u_min"]
+        else:
+            seg_idx = int(wall_name.replace("wall_", "")) - 1 if wall_name.startswith("wall_") else -1
+            merged_idx = None
+            for mi, mw in enumerate(merged_walls):
+                if seg_idx in mw.get("source_indices", []):
+                    merged_idx = mi
+                    break
+            if merged_idx is None:
+                continue
+            u_shift = 0.0
+
         for op in entry.get("openings", []):
             if op["label"] not in ("door", "window"):
                 continue
             offset_m = op.get("offset_m", op["bbox_px"][0] * pixel_m)
             opening = {
                 "label": op["label"],
-                "offset": round(offset_m, 3),
+                "offset": round(offset_m + u_shift, 3),
                 "width": op["width_m"],
                 "height": op["height_m"],
                 "sill_height": op.get("sill_m", 0.0),
             }
             merged_walls[merged_idx]["_openings"].append(opening)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -451,22 +503,248 @@ def compute_room_boundaries(all_room_walls):
         for w in walls:
             pts.append(w["start"])
             pts.append(w["end"])
-        if len(pts) < 3:
+        if len(pts) < 2:
             boundaries[room_name] = []
             continue
-        boundaries[room_name] = _convex_hull_2d(np.array(pts))
+        arr = np.array(pts)
+        x_min, y_min = arr.min(axis=0)
+        x_max, y_max = arr.max(axis=0)
+        boundaries[room_name] = [
+            [float(x_min), float(y_min)],
+            [float(x_max), float(y_min)],
+            [float(x_max), float(y_max)],
+            [float(x_min), float(y_max)],
+        ]
     return boundaries
+
+
+# ---------------------------------------------------------------------------
+# Manhattan-direction detection
+# ---------------------------------------------------------------------------
+
+def _find_manhattan_angles(all_room_walls, angle_tol_deg=10.0):
+    """Find the 2 dominant wall angles across all rooms."""
+    angles = []
+    lengths = []
+    for walls in all_room_walls.values():
+        for w in walls:
+            angles.append(w["angle"])
+            lengths.append(w["length"])
+    if not angles:
+        return []
+
+    angles = np.array(angles)
+    lengths = np.array(lengths)
+    tol = np.deg2rad(angle_tol_deg)
+
+    buckets: list[tuple[float, float]] = []
+    for a, l in zip(angles, lengths):
+        placed = False
+        for i, (ba, bl) in enumerate(buckets):
+            if min(abs(a - ba), np.pi - abs(a - ba)) < tol:
+                buckets[i] = (ba, bl + l)
+                placed = True
+                break
+        if not placed:
+            buckets.append((a, l))
+
+    buckets.sort(key=lambda x: x[1], reverse=True)
+    manhattan = [b[0] for b in buckets[:2]]
+    logger.info(
+        "Manhattan angles: %s (total length: %s)",
+        [f"{np.degrees(a):.1f}°" for a in manhattan],
+        [f"{b[1]:.1f}m" for b in buckets[:2]],
+    )
+    return manhattan
+
+
+def _filter_non_manhattan(all_room_walls, angle_tol_deg, ifc_cfg):
+    """Apply stricter thresholds to walls not aligned with dominant directions."""
+    manhattan = _find_manhattan_angles(all_room_walls, angle_tol_deg)
+    if len(manhattan) < 2:
+        return all_room_walls
+
+    tol = np.deg2rad(angle_tol_deg)
+
+    non_manhattan_angles: dict[int, list[str]] = {}
+    for room_name, walls in all_room_walls.items():
+        for w in walls:
+            on_manhattan = any(
+                min(abs(w["angle"] - ma), np.pi - abs(w["angle"] - ma)) < tol
+                for ma in manhattan
+            )
+            if not on_manhattan:
+                bucket = round(np.degrees(w["angle"]))
+                non_manhattan_angles.setdefault(bucket, []).append(room_name)
+
+    multi_room_angles = set()
+    for bucket, rooms in non_manhattan_angles.items():
+        if len(set(rooms)) >= 2:
+            multi_room_angles.add(bucket)
+            logger.info("  Non-Manhattan angle ~%d° seen in %d rooms — keeping",
+                        bucket, len(set(rooms)))
+
+    strict_fill = max(ifc_cfg.min_wall_fill_ratio * 2.5, 0.35)
+    strict_min_length = max(ifc_cfg.min_wall_length_m * 2, 0.8)
+
+    filtered = {}
+    for room_name, walls in all_room_walls.items():
+        kept = []
+        for w in walls:
+            on_manhattan = any(
+                min(abs(w["angle"] - ma), np.pi - abs(w["angle"] - ma)) < tol
+                for ma in manhattan
+            )
+            if on_manhattan:
+                kept.append(w)
+                continue
+
+            bucket = round(np.degrees(w["angle"]))
+            seen_multi_room = bucket in multi_room_angles
+            fill = w.get("fill_ratio", 1.0)
+            length = w.get("length", 0)
+
+            if seen_multi_room and fill >= strict_fill and length >= strict_min_length:
+                logger.info(
+                    "  %s: keeping non-Manhattan wall (angle=%.1f°, "
+                    "fill=%.2f, len=%.2f) — multi-room + strict OK",
+                    room_name, np.degrees(w["angle"]), fill, length,
+                )
+                kept.append(w)
+            else:
+                logger.info(
+                    "  %s: removing non-Manhattan wall (angle=%.1f°, "
+                    "fill=%.2f, len=%.2f, multi_room=%s)",
+                    room_name, np.degrees(w["angle"]), fill, length,
+                    seen_multi_room,
+                )
+        filtered[room_name] = kept
+
+    before = sum(len(ws) for ws in all_room_walls.values())
+    after = sum(len(ws) for ws in filtered.values())
+    if before != after:
+        logger.info("Non-Manhattan filter: %d → %d walls (removed %d)",
+                    before, after, before - after)
+    return filtered
+
+
+# ---------------------------------------------------------------------------
+# Endpoint snapping
+# ---------------------------------------------------------------------------
+
+def snap_wall_endpoints(walls, tol=0.15):
+    """Snap nearby wall endpoints together and to wall bodies (T-junctions)."""
+    snapped_ll = 0
+    snapped_t = 0
+
+    for _ in range(3):
+        for i in range(len(walls)):
+            for ki in ("start", "end"):
+                pi = np.array(walls[i][ki])
+
+                best_dist = tol
+                best_target = None
+                best_type = None
+
+                for j in range(len(walls)):
+                    if i == j:
+                        continue
+                    for kj in ("start", "end"):
+                        pj = np.array(walls[j][kj])
+                        dist = np.linalg.norm(pi - pj)
+                        if 0 < dist < best_dist:
+                            best_dist = dist
+                            best_target = ((pi + pj) / 2).tolist()
+                            best_type = ("ll", j, kj)
+
+                    sj = np.array(walls[j]["start"])
+                    ej = np.array(walls[j]["end"])
+                    seg = ej - sj
+                    seg_len = np.linalg.norm(seg)
+                    if seg_len < 0.01:
+                        continue
+                    t = np.dot(pi - sj, seg) / (seg_len ** 2)
+                    if t < 0.01 or t > 0.99:
+                        continue
+                    closest = sj + t * seg
+                    dist = np.linalg.norm(pi - closest)
+                    if 0 < dist < best_dist:
+                        best_dist = dist
+                        best_target = closest.tolist()
+                        best_type = ("t", j)
+
+                if best_target is not None:
+                    walls[i][ki] = best_target
+                    if best_type[0] == "ll":
+                        walls[best_type[1]][best_type[2]] = best_target
+                        snapped_ll += 1
+                    else:
+                        snapped_t += 1
+
+    if snapped_ll or snapped_t:
+        logger.info("Snapped endpoints: %d L-joints, %d T-joints (tol=%.2fm)",
+                    snapped_ll, snapped_t, tol)
+
+    extended = 0
+    for i in range(len(walls)):
+        si = np.array(walls[i]["start"])
+        ei = np.array(walls[i]["end"])
+        wall_dir = ei - si
+        wall_len = np.linalg.norm(wall_dir)
+        if wall_len < 0.01:
+            continue
+        wall_dir /= wall_len
+
+        for ki, pt, sign in [("start", si, -1.0), ("end", ei, 1.0)]:
+            for j in range(len(walls)):
+                if i == j:
+                    continue
+                sj = np.array(walls[j]["start"])
+                ej = np.array(walls[j]["end"])
+                seg = ej - sj
+                seg_len = np.linalg.norm(seg)
+                if seg_len < 0.01:
+                    continue
+                t = np.dot(pt - sj, seg) / (seg_len ** 2)
+                if t < -0.05 or t > 1.05:
+                    continue
+                closest = sj + t * seg
+                dist = np.linalg.norm(pt - closest)
+                if dist < 0.01:
+                    half_thick = walls[j].get("thickness", 0.15) / 2.0
+                    new_pt = (pt + sign * wall_dir * half_thick).tolist()
+                    walls[i][ki] = new_pt
+                    extended += 1
+                    break
+
+    if extended:
+        logger.info("Extended %d endpoints past junctions for thickness", extended)
+    return walls
 
 
 # ---------------------------------------------------------------------------
 # JSON builder
 # ---------------------------------------------------------------------------
 
+def _load_wall_meta(wall_image_dir: str | None) -> dict[str, list]:
+    """Load wall_meta.json for each room from the wall images directory."""
+    meta_all: dict[str, list] = {}
+    if not wall_image_dir or not os.path.isdir(wall_image_dir):
+        return meta_all
+    for rd in sorted(glob.glob(os.path.join(wall_image_dir, "room_*"))):
+        mp = os.path.join(rd, "wall_meta.json")
+        if os.path.exists(mp):
+            with open(mp) as f:
+                meta_all[os.path.basename(rd)] = json.load(f)
+    return meta_all
+
+
 def build_building_json(
     room_cloud_paths: list[str],
     openings_dir: str | None,
     wall_seg_cfg: WallSegConfig,
     ifc_cfg: IfcExportConfig,
+    wall_image_dir: str | None = None,
 ) -> dict:
     """Build the canonical building JSON from room clouds + openings."""
     room_openings_all: dict[str, list] = {}
@@ -475,8 +753,13 @@ def build_building_json(
         room_openings_all, pixel_m = load_openings(openings_dir)
         logger.info("Loaded openings for %d rooms", len(room_openings_all))
 
+    if wall_image_dir is None and openings_dir:
+        wall_image_dir = os.path.join(os.path.dirname(openings_dir), "wall_images")
+    room_wall_meta = _load_wall_meta(wall_image_dir)
+
     all_room_walls: dict[str, list] = {}
     skipped = []
+    _debug: dict[str, dict] = {}
 
     for cloud_path in room_cloud_paths:
         fname = os.path.splitext(os.path.basename(cloud_path))[0]
@@ -494,28 +777,83 @@ def build_building_json(
             skipped.append(room_name)
             continue
 
-        wall_geos = [compute_wall_geometry(w, wall_seg_cfg.up_axis) for w in walls]
-        wall_geos = [
-            g for g in wall_geos
-            if ifc_cfg.min_wall_length_m <= g["length"] <= ifc_cfg.max_wall_length_m
-            and g["length"] / max(g["height"], 1e-3) >= ifc_cfg.min_wall_aspect_ratio
-        ]
+        wall_geos_raw = [compute_wall_geometry(w, wall_seg_cfg.up_axis) for w in walls]
+        wall_geos = []
+        filtered_reasons: list[str] = []
+        for raw_idx, g in enumerate(wall_geos_raw):
+            if g["length"] < ifc_cfg.min_wall_length_m:
+                filtered_reasons.append(f"  FILTERED: length {g['length']:.2f}m < {ifc_cfg.min_wall_length_m}")
+                continue
+            if g["length"] > ifc_cfg.max_wall_length_m:
+                filtered_reasons.append(f"  FILTERED: length {g['length']:.2f}m > {ifc_cfg.max_wall_length_m}")
+                continue
+            aspect = g["length"] / max(g["height"], 1e-3)
+            if aspect < ifc_cfg.min_wall_aspect_ratio:
+                filtered_reasons.append(f"  FILTERED: aspect {aspect:.2f} < {ifc_cfg.min_wall_aspect_ratio}")
+                continue
+            if g["thickness"] > ifc_cfg.max_wall_thickness_m:
+                logger.debug("  CLAMPED: thickness %.2fm → %.2fm", g["thickness"], ifc_cfg.default_thickness)
+                g["thickness"] = ifc_cfg.default_thickness
+            if g.get("is_exterior"):
+                logger.debug("  EXTERIOR wall (one-sided points): thickness → %.2fm", ifc_cfg.exterior_thickness)
+                g["thickness"] = ifc_cfg.exterior_thickness
+            if g["fill_ratio"] < ifc_cfg.min_wall_fill_ratio:
+                filtered_reasons.append(
+                    f"  FILTERED: fill_ratio {g['fill_ratio']:.2f} < {ifc_cfg.min_wall_fill_ratio} "
+                    f"(len={g['length']:.2f}m, h={g['height']:.2f}m)"
+                )
+                continue
+            g["_raw_idx"] = raw_idx
+            wall_geos.append(g)
+
+        for reason in filtered_reasons:
+            logger.debug(reason)
+        logger.info("  %s: %d raw → %d after filters (%d removed)",
+                     room_name, len(wall_geos_raw), len(wall_geos), len(filtered_reasons))
+
         if not wall_geos:
             skipped.append(room_name)
             continue
 
         merged = merge_wall_faces(wall_geos, ifc_cfg, wall_seg_cfg.angle_tol_deg)
+        logger.info("  %s: %d after merge_wall_faces", room_name, len(merged))
+
+        _debug[room_name] = {
+            "n_segments": len(walls),
+            "n_directions": n_dirs,
+            "n_raw_geos": len(wall_geos_raw),
+            "n_filtered": len(filtered_reasons),
+            "n_after_filter": len(wall_geos),
+            "n_after_merge": len(merged),
+            "raw_geos": wall_geos_raw,
+            "filtered_geos": wall_geos,
+            "merged_geos": merged,
+        }
 
         room_openings = room_openings_all.get(room_name, [])
         if room_openings:
-            attach_openings(merged, len(walls), room_openings, pixel_m)
+            wall_meta = room_wall_meta.get(room_name, [])
+            attach_openings(merged, wall_meta, room_openings, pixel_m)
 
         all_room_walls[room_name] = merged
 
     logger.info("Processed %d rooms, skipped %d", len(all_room_walls), len(skipped))
 
+    all_room_walls = _filter_non_manhattan(all_room_walls, wall_seg_cfg.angle_tol_deg, ifc_cfg)
+
+    pre_dedup_count = sum(len(ws) for ws in all_room_walls.values())
     unique_walls = deduplicate_walls(all_room_walls, ifc_cfg, wall_seg_cfg.angle_tol_deg)
-    logger.info("Deduplicated: %d unique walls", len(unique_walls))
+    logger.info("Deduplicated: %d → %d unique walls (removed %d)",
+                pre_dedup_count, len(unique_walls), pre_dedup_count - len(unique_walls))
+
+    unique_walls = snap_wall_endpoints(unique_walls, tol=ifc_cfg.snap_tolerance_m)
+
+    all_heights = sorted([w["height"] for w in unique_walls])
+    if all_heights:
+        storey_height = float(np.percentile(all_heights, 90))
+        for w in unique_walls:
+            w["height"] = storey_height
+        logger.info("Normalized wall heights to %.2fm (90th percentile)", storey_height)
 
     storey_id = "L0"
     data: dict = {
@@ -574,6 +912,7 @@ def build_building_json(
         "JSON: %d walls, %d doors, %d windows, %d rooms",
         len(data["walls"]), len(data["doors"]), len(data["windows"]), len(data["rooms"]),
     )
+    data["_debug"] = _debug
     return data
 
 
@@ -621,7 +960,7 @@ def build_ifc(data: dict, out_path: str = "model.ifc",
                               Items=[solid])
         return m.create_entity("IfcProductDefinitionShape", Representations=[rep])
 
-    def _polygon(body, pts, height):
+    def _polygon(body, pts, height):  # noqa: kept for potential future use
         ifc_pts = [_pt((p[0], p[1])) for p in pts]
         ifc_pts.append(ifc_pts[0])
         curve = m.create_entity("IfcPolyline", Points=ifc_pts)

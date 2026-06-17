@@ -288,15 +288,31 @@ def flatten_wall(wall, cfg: WallSegConfig):
 
 def save_wall_images(walls, room_name: str, out_dir: str, cfg: WallSegConfig):
     """Flatten every wall and save as clean PNGs. Returns list of flat dicts."""
+    import json
+
     room_dir = os.path.join(out_dir, room_name)
     os.makedirs(room_dir, exist_ok=True)
 
     flats = []
+    wall_meta = []
     for i, w in enumerate(walls):
         flat = flatten_wall(w, cfg)
         flats.append(flat)
         img_path = os.path.join(room_dir, f"wall_{i + 1:02d}.png")
         Image.fromarray(flat["image"]).save(img_path)
+        wall_meta.append({
+            "name": f"wall_{i + 1:02d}",
+            "normal_2d": [float(w["normal_2d"][0]), float(w["normal_2d"][1])],
+            "offset": float(w["offset"]),
+            "u_min": float(flat["u"].min()),
+            "u_max": float(flat["u"].max()),
+            "width_m": flat["width_m"],
+            "height_m": flat["height_m"],
+        })
+
+    meta_path = os.path.join(room_dir, "wall_meta.json")
+    with open(meta_path, "w") as f:
+        json.dump(wall_meta, f, indent=2)
 
     logger.info("  %s/: saved %d wall images to %s", room_name, len(flats), room_dir)
     return flats
