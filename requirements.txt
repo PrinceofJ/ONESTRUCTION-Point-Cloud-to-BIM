@@ -1,0 +1,13 @@
+numpy
+scipy
+scikit-image
+opencv-python-headless
+pillow
+matplotlib
+open3d
+pyyaml
+# --- optional ---
+# supervision        # only for the sv-based overlays (the notebooks don't need it)
+# pytest             # only for the test suite (tests/)
+# torch torchvision  # only for SAM refinement (Notebook 4, GPU/Colab); then install SAM 2:
+#                    #   pip install "git+https://github.com/facebookresearch/sam2.git"
