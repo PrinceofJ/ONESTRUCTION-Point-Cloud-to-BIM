@@ -38,7 +38,7 @@ def _cluster_1d_gaps(values, tol):
     return result
 
 
-def _find_angle_peaks(theta, n_bins=180, smooth_width=5, min_height_frac=0.02):
+def _find_angle_peaks(theta, n_bins=180, smooth_width=5, min_height_frac=0.08):
     counts, edges = np.histogram(theta, bins=n_bins, range=(0, np.pi))
     centres = 0.5 * (edges[:-1] + edges[1:])
 

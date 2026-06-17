@@ -38,7 +38,7 @@ def _cluster_1d_gaps(values, tol):
     return result
 
 
-def _find_angle_peaks(theta, n_bins=180, smooth_width=5, min_height_frac=0.02):
+def _find_angle_peaks(theta, n_bins=180, smooth_width=5, min_height_frac=0.08):
     counts, edges = np.histogram(theta, bins=n_bins, range=(0, np.pi))
     centres = 0.5 * (edges[:-1] + edges[1:])
     tiled = np.concatenate([counts, counts, counts])
@@ -118,10 +118,11 @@ def segment_walls_for_ifc(pcd, wall_seg_cfg: WallSegConfig):
         mean_n /= np.linalg.norm(mean_n) + 1e-9
         offsets = a_pts[:, ha] * mean_n[0] + a_pts[:, hb] * mean_n[1]
         off_labels = _cluster_1d_gaps(offsets, wall_seg_cfg.offset_tol_m)
+        ifc_min_pts = max(wall_seg_cfg.min_wall_points, 500)
         for o_label in np.unique(off_labels):
             o_mask = off_labels == o_label
             wall_pts = a_pts[o_mask]
-            if len(wall_pts) < wall_seg_cfg.min_wall_points:
+            if len(wall_pts) < ifc_min_pts:
                 continue
             cloud = o3d.geometry.PointCloud()
             cloud.points = o3d.utility.Vector3dVector(wall_pts)
@@ -494,7 +495,11 @@ def build_building_json(
             continue
 
         wall_geos = [compute_wall_geometry(w, wall_seg_cfg.up_axis) for w in walls]
-        wall_geos = [g for g in wall_geos if g["length"] <= ifc_cfg.max_wall_length_m]
+        wall_geos = [
+            g for g in wall_geos
+            if ifc_cfg.min_wall_length_m <= g["length"] <= ifc_cfg.max_wall_length_m
+            and g["length"] / max(g["height"], 1e-3) >= ifc_cfg.min_wall_aspect_ratio
+        ]
         if not wall_geos:
             skipped.append(room_name)
             continue

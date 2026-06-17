@@ -92,10 +92,12 @@ wall_proc:
 
 ifc_export:
   min_directions: 2
+  min_wall_length_m: 0.3
   max_wall_length_m: 15.0
+  min_wall_aspect_ratio: 0.15
   default_thickness: 0.15
   max_merge_thickness: 0.35
-  dedup_offset_tol: 0.20
+  dedup_offset_tol: 0.12
   dedup_overlap_frac: 0.30
   project_name: Scanned Building
   floor_elevation: 0.0

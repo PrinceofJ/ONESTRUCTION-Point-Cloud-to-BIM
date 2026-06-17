@@ -150,12 +150,14 @@ class IfcExportConfig:
 
     # quality filters
     min_directions: int = 2
+    min_wall_length_m: float = 0.3
     max_wall_length_m: float = 15.0
+    min_wall_aspect_ratio: float = 0.15
 
     # merge / dedup
     default_thickness: float = 0.15
     max_merge_thickness: float = 0.35
-    dedup_offset_tol: float = 0.20
+    dedup_offset_tol: float = 0.12
     dedup_overlap_frac: float = 0.30
 
     # IFC output
