@@ -245,6 +245,69 @@ def debug_walls(room_cloud_dir, openings_dir, config_path, save_path, verbose):
     show_wall_debug(building_json, save_path=save_path)
 
 
+@main.command("from-rooms")
+@click.argument("room_cloud_dir", type=click.Path(exists=True))
+@click.option("-o", "--out-dir", default=None, help="Output directory (default: parent of room_cloud_dir).")
+@click.option("-c", "--config", "config_path", default=None, help="YAML config file.")
+@click.option("--no-sam", is_flag=True, help="Disable SAM (wall proc).")
+@click.option("-v", "--verbose", is_flag=True, help="Debug logging.")
+def from_rooms(room_cloud_dir, out_dir, config_path, no_sam, verbose):
+    """Run wall-seg → wall-proc → IFC export starting from room clouds folder."""
+    _setup_logging(verbose)
+    cfg = _load_config(config_path)
+
+    if out_dir is None:
+        out_dir = os.path.dirname(os.path.abspath(room_cloud_dir))
+
+    from .wall_segmentation import run_wall_segmentation
+    from .wall_image_processing import run_wall_image_processing
+    from .ifc_export import build_building_json, build_ifc
+
+    paths = sorted(glob.glob(os.path.join(room_cloud_dir, "room_*_walls.ply")))
+    if not paths:
+        paths = sorted(glob.glob(os.path.join(room_cloud_dir, "*.ply")))
+    if not paths:
+        click.echo(f"No .ply files found in {room_cloud_dir}", err=True)
+        sys.exit(1)
+
+    click.echo(f"[1/3] Wall segmentation ({len(paths)} rooms)")
+    wall_image_dir = os.path.join(out_dir, "wall_images")
+    wall_results = run_wall_segmentation(paths, cfg.wall_seg, wall_image_dir)
+    total_walls = sum(len(v) for v in wall_results.values())
+    click.echo(f"  → {total_walls} wall images across {len(wall_results)} rooms")
+
+    click.echo("[2/3] Wall image processing (door/window detection)")
+    openings_dir = os.path.join(out_dir, "openings")
+    run_wall_image_processing(wall_image_dir, cfg.wall_proc, openings_dir, use_sam=not no_sam)
+
+    click.echo("[3/3] IFC export")
+    building_json = build_building_json(paths, openings_dir, cfg.wall_seg, cfg.ifc_export,
+                                        wall_image_dir=wall_image_dir)
+
+    json_path = os.path.join(out_dir, "building.json")
+    serializable = {k: v for k, v in building_json.items() if k != "_debug"}
+    with open(json_path, "w") as f:
+        json.dump(serializable, f, indent=2)
+    click.echo(f"  → JSON: {json_path}")
+    click.echo(f"    {len(building_json['walls'])} walls, "
+               f"{len(building_json['doors'])} doors, "
+               f"{len(building_json['windows'])} windows")
+
+    try:
+        ifc_path = os.path.join(out_dir, cfg.output_ifc)
+        build_ifc(
+            building_json, ifc_path,
+            add_floor_slabs=cfg.ifc_export.add_floor_slabs,
+            slab_thickness=cfg.ifc_export.slab_thickness,
+        )
+        click.echo(f"  → IFC: {ifc_path}")
+    except ImportError:
+        click.echo("  ⚠ ifcopenshell not installed — skipping IFC export.")
+        click.echo("    Install with: pip install scan2bim[ifc]")
+
+    click.echo("Done.")
+
+
 @main.command("dump-config")
 @click.option("-o", "--output", default="scan2bim_config.yaml", help="Output YAML path.")
 def dump_config(output):

@@ -277,6 +277,15 @@ def _opening_duplicate(op, existing, pos_tol=0.15, size_tol=0.15):
     return False
 
 
+def _openings_match(a, b, pos_tol=0.20, size_tol=0.20):
+    """Check if two openings refer to the same physical door/window."""
+    if a["label"] != b["label"]:
+        return False
+    return (abs(a["offset"] - b["offset"]) < pos_tol
+            and abs(a["width"] - b["width"]) < size_tol
+            and abs(a["height"] - b["height"]) < size_tol)
+
+
 def deduplicate_walls(all_room_walls, cfg: IfcExportConfig, angle_tol_deg: float = 10.0):
     flat = []
     for room_name, walls in all_room_walls.items():
@@ -329,12 +338,20 @@ def deduplicate_walls(all_room_walls, cfg: IfcExportConfig, angle_tol_deg: float
     unique_walls = []
     for root_idx, indices in groups.items():
         keeper = flat[root_idx].copy()
-        all_openings = list(keeper.get("_openings", []))
+        keeper_room = keeper["_room"]
         keeper_u_min = keeper["u_min"]
+
+        sides: dict[str, list] = {}
+        for op in keeper.get("_openings", []):
+            tagged = op.copy()
+            tagged["_src_room"] = keeper_room
+            sides.setdefault(keeper_room, []).append(tagged)
+
         for idx in indices:
             if idx == root_idx:
                 continue
             other = flat[idx]
+            other_room = other["_room"]
             normals_opposed = np.dot(keeper["normal_2d"], other["normal_2d"]) < 0
             for op in other.get("_openings", []):
                 remapped = op.copy()
@@ -342,9 +359,46 @@ def deduplicate_walls(all_room_walls, cfg: IfcExportConfig, angle_tol_deg: float
                     remapped["offset"] = keeper["length"] - op["offset"] - op["width"]
                 else:
                     remapped["offset"] = op["offset"] + other["u_min"] - keeper_u_min
-                if not _opening_duplicate(remapped, all_openings):
-                    all_openings.append(remapped)
-        keeper["_openings"] = all_openings
+                remapped["_src_room"] = other_room
+                sides.setdefault(other_room, []).append(remapped)
+
+        all_openings_tagged = [op for ops in sides.values() for op in ops]
+        n_sides = len(sides)
+
+        if n_sides >= 2:
+            confirmed = []
+            used = set()
+            for i, a in enumerate(all_openings_tagged):
+                for j, b in enumerate(all_openings_tagged):
+                    if j <= i or j in used:
+                        continue
+                    if a["_src_room"] == b["_src_room"]:
+                        continue
+                    if _openings_match(a, b):
+                        merged_op = a.copy()
+                        merged_op["offset"] = round((a["offset"] + b["offset"]) / 2, 3)
+                        merged_op["width"] = round((a["width"] + b["width"]) / 2, 3)
+                        merged_op["height"] = round((a["height"] + b["height"]) / 2, 3)
+                        merged_op.pop("_src_room", None)
+                        if not _opening_duplicate(merged_op, confirmed):
+                            confirmed.append(merged_op)
+                        used.add(i)
+                        used.add(j)
+                        break
+            n_dropped = len(all_openings_tagged) - len(used)
+            if n_dropped > 0:
+                logger.info("  Wall consensus: kept %d confirmed openings, "
+                            "dropped %d single-side detections",
+                            len(confirmed), n_dropped)
+            keeper["_openings"] = confirmed
+        else:
+            deduped = []
+            for op in all_openings_tagged:
+                clean = {k: v for k, v in op.items() if k != "_src_room"}
+                if not _opening_duplicate(clean, deduped):
+                    deduped.append(clean)
+            keeper["_openings"] = deduped
+
         keeper.pop("_room", None)
         keeper.pop("_idx", None)
         unique_walls.append(keeper)
@@ -506,15 +560,34 @@ def compute_room_boundaries(all_room_walls):
         if len(pts) < 2:
             boundaries[room_name] = []
             continue
+
+        longest = max(walls, key=lambda w: w.get("length", 0))
+        sx, sy = longest["start"]
+        ex, ey = longest["end"]
+        angle = math.atan2(ey - sy, ex - sx)
+        cos_a, sin_a = math.cos(-angle), math.sin(-angle)
+
         arr = np.array(pts)
-        x_min, y_min = arr.min(axis=0)
-        x_max, y_max = arr.max(axis=0)
-        boundaries[room_name] = [
-            [float(x_min), float(y_min)],
-            [float(x_max), float(y_min)],
-            [float(x_max), float(y_max)],
-            [float(x_min), float(y_max)],
+        rotated = np.column_stack([
+            arr[:, 0] * cos_a - arr[:, 1] * sin_a,
+            arr[:, 0] * sin_a + arr[:, 1] * cos_a,
+        ])
+        r_min = rotated.min(axis=0)
+        r_max = rotated.max(axis=0)
+
+        corners_rot = np.array([
+            [r_min[0], r_min[1]],
+            [r_max[0], r_min[1]],
+            [r_max[0], r_max[1]],
+            [r_min[0], r_max[1]],
+        ])
+        cos_b, sin_b = math.cos(angle), math.sin(angle)
+        corners_world = [
+            [float(c[0] * cos_b - c[1] * sin_b),
+             float(c[0] * sin_b + c[1] * cos_b)]
+            for c in corners_rot
         ]
+        boundaries[room_name] = corners_world
     return boundaries
 
 
@@ -1021,7 +1094,7 @@ def build_ifc(data: dict, out_path: str = "model.ifc",
         wall.Representation = _box(body, length, w["thickness"], w["height"],
                                    center=(length / 2.0, 0.0))
         wall.ObjectPlacement = _place(loc=(sx, sy, z0), x=(ux, uy, 0.0))
-        walls_map[w["id"]] = {"e": wall, "storey": sk}
+        walls_map[w["id"]] = {"e": wall, "storey": sk, "thickness": w["thickness"]}
         contained[sk].append(wall)
 
     def add_opening(spec, kind):
@@ -1029,7 +1102,7 @@ def build_ifc(data: dict, out_path: str = "model.ifc",
         wall = host["e"]
         sk = host["storey"]
         sill = float(spec.get("sill_height", 0.0))
-        depth = 1.0
+        depth = host.get("thickness", 0.15)
         op = ifcopenshell.api.root.create_entity(m, ifc_class="IfcOpeningElement",
                                                  name=f"Opening-{spec['id']}")
         op.PredefinedType = "OPENING"
