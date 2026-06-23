@@ -713,6 +713,81 @@ def _filter_non_manhattan(all_room_walls, angle_tol_deg, ifc_cfg):
     return filtered
 
 
+def snap_wall_angles(all_room_walls, angle_tol_deg=10.0):
+    """Snap slightly-off-axis walls to the nearest Manhattan direction.
+
+    Preserves the wall's lateral position (offset from origin along the normal)
+    and recomputes start/end on the new axis so the wall doesn't drift inward
+    or outward.
+    """
+    manhattan = _find_manhattan_angles(all_room_walls, angle_tol_deg)
+    if len(manhattan) < 1:
+        return all_room_walls
+
+    tol = np.deg2rad(angle_tol_deg)
+    snapped = 0
+
+    for room_name, walls in all_room_walls.items():
+        for w in walls:
+            wall_angle = w["angle"]
+            best_ma = None
+            best_diff = tol
+            for ma in manhattan:
+                diff = min(abs(wall_angle - ma), np.pi - abs(wall_angle - ma))
+                if diff < best_diff and diff > 1e-6:
+                    best_diff = diff
+                    best_ma = ma
+            if best_ma is None:
+                continue
+
+            s = np.array(w["start"])
+            e = np.array(w["end"])
+
+            n2d_new = np.array([np.cos(best_ma), np.sin(best_ma)])
+            wall_dir = np.array([-n2d_new[1], n2d_new[0]])
+            if np.dot(wall_dir, e - s) < 0:
+                wall_dir = -wall_dir
+
+            # Preserve offset: project the wall midpoint onto the new normal
+            mid = (s + e) / 2.0
+            new_offset = float(np.dot(mid, n2d_new))
+
+            # Project original endpoints onto the new wall direction
+            u_s = float(np.dot(s, wall_dir))
+            u_e = float(np.dot(e, wall_dir))
+            u_min, u_max = min(u_s, u_e), max(u_s, u_e)
+
+            w["start"] = (u_min * wall_dir + new_offset * n2d_new).tolist()
+            w["end"] = (u_max * wall_dir + new_offset * n2d_new).tolist()
+            w["angle"] = float(best_ma)
+            w["offset"] = new_offset
+            w["normal_2d"] = n2d_new.tolist()
+            w["u_min"] = u_min
+            w["u_max"] = u_max
+            if "u_axis" in w:
+                w["u_axis"] = [float(wall_dir[0]), float(wall_dir[1]), 0.0]
+            if "normal_3d" in w:
+                n3d = np.array(w["normal_3d"])
+                axes = [i for i in range(3) if abs(n3d[i]) > 1e-6 or i != 2]
+                ha, hb = [a for a in range(3) if a != 2][:2]
+                n3d_new = np.zeros(3)
+                n3d_new[ha] = n2d_new[0]
+                n3d_new[hb] = n2d_new[1]
+                n3d_new /= np.linalg.norm(n3d_new) + 1e-9
+                w["normal_3d"] = n3d_new.tolist()
+
+            snapped += 1
+            logger.debug(
+                "  %s: snapped wall angle %.1f° → %.1f° (diff=%.2f°)",
+                room_name, np.degrees(wall_angle), np.degrees(best_ma),
+                np.degrees(best_diff),
+            )
+
+    if snapped:
+        logger.info("Snapped %d wall angles to Manhattan directions", snapped)
+    return all_room_walls
+
+
 # ---------------------------------------------------------------------------
 # Endpoint snapping
 # ---------------------------------------------------------------------------
@@ -994,6 +1069,7 @@ def build_building_json(
     logger.info("Processed %d rooms, skipped %d", len(all_room_walls), len(skipped))
 
     all_room_walls = _filter_non_manhattan(all_room_walls, wall_seg_cfg.angle_tol_deg, ifc_cfg)
+    all_room_walls = snap_wall_angles(all_room_walls, wall_seg_cfg.angle_tol_deg)
 
     pre_dedup_count = sum(len(ws) for ws in all_room_walls.values())
     unique_walls = deduplicate_walls(all_room_walls, ifc_cfg, wall_seg_cfg.angle_tol_deg)
