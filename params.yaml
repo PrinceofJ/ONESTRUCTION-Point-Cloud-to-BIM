@@ -1,0 +1,39 @@
+# ============================================================================
+# params.yaml — the ONLY file you edit to run the Scan-to-BIM pipeline.
+#
+# Every notebook reads this via `scan2bim.load_config()`. Values here override the
+# defaults in `scan2bim/config.py`; anything you omit falls back to that default.
+# Paths are resolved relative to the project root (this folder). After editing, just
+# "Run All" on each notebook in order — never edit a notebook cell.
+#
+# Sections (input:, output:, raster: …) are only for readability; the loader matches
+# each key to a Config field by name.
+# ============================================================================
+
+input:
+  file_path: data/area3.xyz                # S3DIS Area 3 FULL (non-segmented) original capture
+  units_per_meter: 1.0           # raw units per metre (1.0 if already in metres)
+
+output:
+  out_root: scan2bim_out         # all stage folders + ZIPs land here
+
+raster:
+  pixel_m: 0.03                  # raster resolution (metres / pixel) — the memory dial
+
+watershed:
+  min_coverage_frac: 0.25        # default void-rejection: area3.xyz is a FULL cloud with
+                                 # points inside room interiors, so coverage is meaningful
+                                 # again. (Use 0.0 for a structural-only cloud, which has no
+                                 # interior points and would otherwise lose every room.)
+
+slab:
+  slab_lo_m: 0.1                 # shallower wall-height band edge (closer to ceiling)
+  slab_hi_m: 0.5                 # deeper band edge
+
+walls:
+  room_erode_m: 0.125            # boundary-ring erosion radius (= ring thickness)
+  wall_dilate_m: 0.15            # how far the ring reaches out to grab wall pixels
+
+sam:
+  use_sam_recall: true           # master switch for the Notebook 4 SAM refinement
+  sam_backend: sam2              # 'sam2' (default) | 'sam3' | 'sam1'
