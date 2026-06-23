@@ -1,9 +1,55 @@
 [build-system]
+requires = ["setuptools>=68.0", "wheel"]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "scan2bim"
+version = "0.1.0"
+description = "End-to-end pipeline converting 3D LiDAR scans into IFC4 BIM models"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Jackson Matsumura" },
+    { name = "Ian Mendoza" },
+    { name = "Finn Wood" },
+    { name = "Marvin Recio" },
+]
+
+dependencies = [
+    "numpy>=1.24",
+    "open3d>=0.17",
+    "opencv-python-headless>=4.8",
+    "scipy>=1.11",
+    "scikit-image>=0.21",
+    "Pillow>=10.0",
+    "supervision>=0.16",
+    "click>=8.1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+sam = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "segment-anything",
+]
+ifc = [
+    "ifcopenshell",
+]
+viz = [
+    "matplotlib>=3.7",
+]
+dev = [
+    "pytest>=7.0",
+    "scan2bim[sam,ifc,viz]",
+]
+
+[project.scripts]
+scan2bim = "scan2bim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 version = "1.0.0"
 description = "Scan-to-BIM room segmentation (occupancy -> watershed -> wall assignment -> SAM refinement)."
 requires-python = ">=3.9"
