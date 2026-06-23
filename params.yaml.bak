@@ -11,7 +11,7 @@
 # ============================================================================
 
 input:
-  file_path: data/area3.xyz                # S3DIS Area 3 FULL (non-segmented) original capture
+  file_path: data\apt_subsampled.ply      # your point cloud (drop it in data/)
   units_per_meter: 1.0           # raw units per metre (1.0 if already in metres)
 
 output:
@@ -20,14 +20,8 @@ output:
 raster:
   pixel_m: 0.03                  # raster resolution (metres / pixel) — the memory dial
 
-watershed:
-  min_coverage_frac: 0.25        # default void-rejection: area3.xyz is a FULL cloud with
-                                 # points inside room interiors, so coverage is meaningful
-                                 # again. (Use 0.0 for a structural-only cloud, which has no
-                                 # interior points and would otherwise lose every room.)
-
 slab:
-  slab_lo_m: 0.1                 # shallower wall-height band edge (closer to ceiling)
+  slab_lo_m: 0.125               # shallower wall-height band edge (closer to ceiling)
   slab_hi_m: 0.5                 # deeper band edge
 
 walls:

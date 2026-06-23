@@ -1,42 +1,73 @@
 # Scan-to-BIM Room Segmentation — Refactored Pipeline
 
 This refactor splits the original monolithic `RoomSegmentation` notebook into a shared
-Python package (`scan2bim/`) plus five thin driver notebooks. All reusable logic lives in
+Python package (`scan2bim/`) plus a set of thin driver notebooks. All reusable logic lives in
 the package so nothing is duplicated across notebooks; each notebook loads the previous
 stage's outputs from disk (or its ZIP) and writes a structured, zipped output directory.
+
+**Three-method comparison, one shared front-end.** The notebooks are organised under
+`notebooks/` by stage and method:
+
+```
+notebooks/
+├── preprocessing/   one shared stage 1 (occupancy raster) feeding every method
+├── methods/
+│   ├── geometric/      METHOD 1 — deterministic watershed only
+│   ├── SAM/            METHOD 2 — SAM auto-segmentation, no geometric prior  (stubs)
+│   └── geometric_SAM/  METHOD 3 — watershed prior + prompted-SAM refinement
+├── converters/      input data-prep (S3DIS → structural .ply)
+└── evaluation/      Panoptic-Quality scoring (shared; scores every method vs. one GT)
+```
+
+The three methods are alternative ways to turn the shared Stage-1 rasters into room labels;
+each writes its own stage directories so they coexist, and each ends in the **same**
+boundary-ring wall assignment (the logic in `room_wall_masks_boundary_ring`, called on whichever
+room masks the method produced).
 
 **One edit surface.** The only file a user edits is `params.yaml` at the project root. Every
 notebook's first cell is `CFG = scan2bim.load_config()` — the shared loader
 (`scan2bim/runconfig.py`) reads `params.yaml` over the `Config` defaults, resolves
 `file_path` **and** `out_root` to absolute paths under the project root, and returns the one
-`CFG`. There is no per-notebook bootstrap or `Config(...)` literal anymore.
+`CFG`. There is no per-notebook bootstrap or `Config(...)` literal anymore. `project_root()`
+walks up from the kernel's CWD to find the package, so notebooks resolve the root no matter how
+deep they sit under `notebooks/`.
 
 ---
 
-## Execution order — `1 → 2 → 3 → 4`
+## Execution order — shared preprocessing, then one method
 
 The wall-assignment algorithm's **first step is "obtain room mask `M_i`"**, and room masks
-are produced only by the watershed. So the watershed must run **before** wall assignment.
-The notebooks (and their stage folders) are numbered to match that dependency order:
+are produced by a segmentation stage. So segmentation must run **before** wall assignment.
+Every method shares the Stage-1 raster, then runs its own segmentation → wall-assignment chain:
 
 ```
-Notebook 1  (occupancy rasters)
+preprocessing/notebook_1_occupancy_raster   →  stage1_occupancy   (shared by all methods)
       │
-      ▼
-Notebook 2  (watershed → room masks)
+      ├─ METHOD 1  geometric/
+      │     notebook_1_watershed              →  stage2_watershed
+      │     notebook_2_wall_assignment        →  stage3_walls
       │
-      ▼
-Notebook 3  (boundary-ring wall assignment on WATERSHED masks → stage3_walls)   ← local, always
+      ├─ METHOD 2  SAM/                                              (stubs — not implemented)
+      │     notebook_1_sam_auto_segmentation  →  stage_sam_auto
+      │     notebook_2_wall_assignment        →  stage_sam_walls
       │
-      ▼
-Notebook 4  (prompted SAM refinement of the masks; GPU/Colab)                   ┐ optional
-      │                                                                         │
-      ▼                                                                         │
-Notebook 5  (the SAME boundary-ring assignment on SAM-refined masks → stage5)   ┘
+      └─ METHOD 3  geometric_SAM/
+            notebook_1_watershed              →  stage_geometric_sam_watershed
+            notebook_2_sam_refinement (GPU)   →  stage4_sam_refined
+            notebook_3_wall_assignment        →  stage5_walls_sam_refined
 ```
 
-Notebook 3 is **watershed-only** — it never reads SAM output. SAM-refined wall clouds are a
-dedicated **Notebook 5**, so a fresh `1 → 2 → 3` always completes with no switch to set.
+Each method's wall-assignment stage reads only **its own** masks and writes its own stage dir,
+so the methods never clobber each other and a fresh run of any one method completes with no
+switch to set. The geometric and geometric+SAM methods both start from a watershed; the
+geometric+SAM copy writes `stage_geometric_sam_watershed` (not `stage2_watershed`) precisely so
+the two coexist.
+
+> **Wiring note (follow-up):** `geometric_SAM/notebook_1_watershed` writes its own
+> `stage_geometric_sam_watershed`, but `geometric_SAM/notebook_2_sam_refinement` (the original
+> Colab SAM notebook) still reads the watershed masks from `stage2_watershed` (`A.STAGE2`).
+> Repointing the SAM-refinement stage at `stage_geometric_sam_watershed` is a small follow-up;
+> it was left untouched here so the SAM-refinement logic is byte-for-byte the original.
 
 Every notebook also loads what it needs from the upstream ZIP, so any stage can be re-run
 independently once its dependencies have been produced once. Each consuming stage validates
@@ -47,13 +78,17 @@ that the reloaded cloud lands inside the upstream raster (`assert_points_in_grid
 
 ## Per-notebook responsibility, inputs, outputs
 
-### Notebook 1 — Occupancy Raster Generation  (`stage1_occupancy`)
+### Preprocessing (shared)
+
+#### `preprocessing/notebook_1_occupancy_raster`  (`stage1_occupancy`)
 - **Does:** load cloud → slab crop → rasterise. Behaviour identical to the original.
 - **In:** point cloud at `CFG.file_path`.
 - **Out:** `occupancy.png`, `wall_mask.npy`, `wallness.npy`, `coverage.npy`,
   `transform.json`, `config.json`.
 
-### Notebook 2 — Watershed Segmentation  (`stage2_watershed`)
+### Method 1 — geometric (`methods/geometric/`)
+
+#### `notebook_1_watershed`  (`stage2_watershed`)
 - **Does:** the original deterministic distance-transform watershed, unchanged, relocated
   into `segment_rooms_watershed`.
 - **In:** `wall_mask.npy` (or `wallness.npy` if `use_wallness`), `coverage.npy`,
@@ -61,50 +96,82 @@ that the reloaded cloud lands inside the upstream raster (`assert_points_in_grid
 - **Out:** `room_labels.npy` (`-1` wall / `0` exterior / `≥1` rooms),
   `room_labels_color.png`, `walls.npy`, `footprint.npy`, `transform.json`, `config.json`.
 
-### Notebook 3 — Room Masks & Wall Assignment  (`stage3_walls`)
-- **Does:** the **new boundary-ring** wall assignment on the **watershed** masks, then
-  back-projection to 3-D. Watershed-only — no `mask_source` switch.
+#### `notebook_2_wall_assignment`  (`stage3_walls`)
+- **Does:** the **boundary-ring** wall assignment on the **watershed** masks, then
+  back-projection to 3-D.
 - **In:** `wallness.npy` + `transform.json` (stage 1), `room_labels.npy` (stage 2), and the
   point cloud (reloaded with the original loader).
 - **Out:** `room_XX_walls.ply` per room, `room_wall_masks.npz`, `room_labels.npy`,
   `transform.json`, `config.json`.
 
-### Notebook 5 — Walls on SAM-Refined Masks  (`stage5_walls_sam_refined`)
-- **Does:** the identical boundary-ring assignment as Notebook 3, but on the **SAM-refined**
-  masks (`room_labels_refined.npy`) from stage 4. **Fails loudly** if stage 4 is absent
-  ("run Notebook 4 first") — never falls back to the watershed masks.
-- **In:** `wallness.npy` + `transform.json` (stage 1), `room_labels_refined.npy` (stage 4),
-  and the point cloud.
-- **Out:** same artifact set as Notebook 3, written to `stage5_walls_sam_refined/`.
+### Method 2 — SAM (`methods/SAM/`)  ⟨stubs — not implemented⟩
 
-### Notebook 4 — Prompted SAM Refinement  (`stage4_sam_refined`, GPU/Colab)
+#### `notebook_1_sam_auto_segmentation`  (`stage_sam_auto`, GPU/Colab)
+- **Should:** run SAM in automatic "segment everything" mode on the Stage-1 rasters (no
+  watershed prior, no prompts) and turn the masks into `room_labels.npy` on the Stage-1 grid.
+- **In:** `wallness.npy`, `coverage.npy`, `transform.json` (stage 1); a SAM checkpoint.
+- **Out (intended):** `room_labels.npy`, `room_labels_color.png`, `transform.json`,
+  `config.json`. *(Bootstrap + TODO block only at present; logic belongs in a new
+  `scan2bim.sam_auto` module.)*
+
+#### `notebook_2_wall_assignment`  (`stage_sam_walls`)
+- **Should:** the identical boundary-ring assignment, on the SAM-method masks from
+  `stage_sam_auto`. Same call as the geometric method — only the mask source differs.
+- **In:** `wallness.npy` + `transform.json` (stage 1), `room_labels.npy` (`stage_sam_auto`),
+  the point cloud.
+- **Out (intended):** same artifact set as the geometric wall-assignment, to `stage_sam_walls/`.
+
+### Method 3 — geometric + SAM (`methods/geometric_SAM/`)
+
+#### `notebook_1_watershed`  (`stage_geometric_sam_watershed`)
+- **Does:** functionally identical to `geometric/notebook_1_watershed` — the same
+  `segment_rooms_watershed` — but writes a **distinct** stage dir so it never clobbers the
+  pure-geometric run's `stage2_watershed`.
+- **In/Out:** same as the geometric watershed, except the output dir is
+  `stage_geometric_sam_watershed`.
+
+#### `notebook_2_sam_refinement`  (`stage4_sam_refined`, GPU/Colab)
 - **Does:** prompts SAM per watershed room (points from the eroded interior + room box),
   then a **single-pass region-adjacency-graph** relabel merges/splits rooms behind the
   model-agnostic `MaskGenerator` (default backend SAM2). Confidence × geometry gated and
   snapped to the wall scaffold. Passes the watershed labels through unchanged if no SAM
   backend/checkpoint is available (never fabricates masks).
 - **In:** `occupancy.png`, `wallness.npy`, `coverage.npy` (stage 1); `room_labels.npy`,
-  `walls.npy`, `footprint.npy`, `config.json` (stage 2); a SAM 2.1 checkpoint.
+  `walls.npy`, `footprint.npy`, `config.json` (`stage2_watershed` — see the wiring note above);
+  a SAM 2.1 checkpoint.
 - **Out:** `room_labels_refined.npy`, `room_labels_refined_color.png`, `transform.json`,
   `config.json`.
+
+#### `notebook_3_wall_assignment`  (`stage5_walls_sam_refined`)
+- **Does:** the identical boundary-ring assignment, but on the **SAM-refined** masks
+  (`room_labels_refined.npy`) from stage 4. **Fails loudly** if stage 4 is absent ("run the
+  SAM-refinement notebook first") — never falls back to the watershed masks.
+- **In:** `wallness.npy` + `transform.json` (stage 1), `room_labels_refined.npy` (stage 4),
+  the point cloud.
+- **Out:** same artifact set as the geometric wall-assignment, to `stage5_walls_sam_refined/`.
 
 ---
 
 ## Data flow / artifact contract
 
-| Artifact            | Produced by | Consumed by         |
-|---------------------|-------------|---------------------|
-| `transform.json`    | N1          | N2, N3, N4          |
-| `wall_mask.npy`     | N1          | N2                  |
-| `wallness.npy`      | N1          | N3, N4              |
-| `coverage.npy`      | N1          | N2, N4              |
-| `occupancy.png`     | N1          | N4                  |
-| `room_labels.npy`   | N2          | N3, N4              |
-| `walls.npy`         | N2          | N4                  |
-| `footprint.npy`     | N2          | N4                  |
-| `room_labels_refined.npy` | N4    | N5 (opt.)           |
-| `stage5_walls_sam_refined/` | N5    | downstream 3-D consumers |
-| point cloud         | (external)  | N1, N3, N5, (N4 opt.) |
+Short labels: **Pre** = `preprocessing/notebook_1_occupancy_raster`; **G·ws / G·wa** =
+`geometric/` watershed / wall-assignment; **GS·ws / GS·ref / GS·wa** = `geometric_SAM/`
+watershed / sam-refinement / wall-assignment. (The `SAM/` method stubs will mirror G with
+`stage_sam_auto → stage_sam_walls`.)
+
+| Artifact (stage)                                  | Produced by | Consumed by                         |
+|---------------------------------------------------|-------------|-------------------------------------|
+| `transform.json` (stage1)                         | Pre         | every later stage                   |
+| `wall_mask.npy` (stage1)                          | Pre         | G·ws, GS·ws                         |
+| `wallness.npy` (stage1)                           | Pre         | G·wa, GS·ref, GS·wa                 |
+| `coverage.npy` (stage1)                           | Pre         | G·ws, GS·ws, GS·ref                 |
+| `occupancy.png` (stage1)                          | Pre         | GS·ref                              |
+| `room_labels.npy` (stage2_watershed)              | G·ws        | G·wa, GS·ref                        |
+| `walls.npy`, `footprint.npy` (stage2_watershed)   | G·ws        | GS·ref                              |
+| `room_labels.npy` (stage_geometric_sam_watershed) | GS·ws       | — *(intended GS·ref; see wiring note)* |
+| `room_labels_refined.npy` (stage4_sam_refined)    | GS·ref      | GS·wa                               |
+| `stage3_walls/`, `stage5_walls_sam_refined/`      | G·wa, GS·wa | downstream 3-D consumers            |
+| point cloud (external)                            | (external)  | Pre, G·wa, GS·wa, (GS·ref opt.)     |
 
 Stage directories live under `CFG.out_root`; each is zipped to `{stage}.zip`. The point
 cloud is treated as an external Drive input (every stage that needs it reloads it
@@ -112,22 +179,26 @@ deterministically), so it is **not** bundled into the ZIPs.
 
 ---
 
-## Optional: SAM-refined wall clouds (`stage5_walls_sam_refined`)
+## Geometric vs. geometric+SAM wall clouds
 
-Notebook 3 assigns walls on the **watershed** masks and writes `stage3_walls`. SAM-refined
-wall clouds are produced by the dedicated **Notebook 5** (not by re-running N3 with a switch):
+The **geometric** method's `notebook_2_wall_assignment` assigns walls on the **watershed** masks
+and writes `stage3_walls`. The **geometric+SAM** method produces SAM-refined wall clouds with its
+own three notebooks (never by flipping a switch on the geometric ones):
 
-1. Run `1 → 2 → 3` locally as usual (`stage3_walls` from the watershed masks).
-2. Run **Notebook 4** in Colab to produce `stage4_sam_refined.zip`; download it into your
-   local `scan2bim_out/`.
-3. **Run Notebook 5.** It loads the refined labels (`room_labels_refined.npy`) from stage 4,
-   runs the identical boundary-ring assignment, and writes **`stage5_walls_sam_refined`**
-   without touching `stage3_walls`. If stage 4 is missing it stops with a clear error.
+1. Run the **geometric+SAM** watershed (`geometric_SAM/notebook_1_watershed`) →
+   `stage_geometric_sam_watershed`.
+2. Run **`geometric_SAM/notebook_2_sam_refinement`** in Colab to produce `stage4_sam_refined.zip`;
+   download it into your local `scan2bim_out/`.
+3. **Run `geometric_SAM/notebook_3_wall_assignment`.** It loads the refined labels
+   (`room_labels_refined.npy`) from stage 4, runs the identical boundary-ring assignment, and
+   writes **`stage5_walls_sam_refined`** without touching `stage3_walls`. If stage 4 is missing it
+   stops with a clear error.
 
-So the watershed-based wall clouds (`stage3_walls`) and the SAM-refined wall clouds
+So the geometric wall clouds (`stage3_walls`) and the geometric+SAM wall clouds
 (`stage5_walls_sam_refined`) coexist side by side; both hold the same artifact set
 (`room_XX_walls.ply`, `room_wall_masks.npz`, `room_labels.npy`, `transform.json`,
-`config.json`) and feed the same downstream 3-D consumers.
+`config.json`) and feed the same downstream 3-D consumers. The `SAM/` method, once implemented,
+adds a third parallel pair (`stage_sam_auto` → `stage_sam_walls`).
 
 ---
 
@@ -153,13 +224,14 @@ median heuristic the original used inside `room_footprints`.
 
 ---
 
-## SAM refinement — prompted, graph-based (Notebook 4)
+## SAM refinement — prompted, graph-based (geometric+SAM, `notebook_2_sam_refinement`)
 
-SAM is **not** run in automatic "segment everything" mode. The watershed is a strong prior;
-SAM only adjusts topology where it is confident and the geometry is weak.
+This is the **geometric+SAM** method's refinement stage. SAM is **not** run in automatic
+"segment everything" mode here (that is the separate **SAM** method); the watershed is a strong
+prior and SAM only adjusts topology where it is confident and the geometry is weak.
 
 **Pipeline (`scan2bim.sam_refine.refine_with_sam`):**
-1. **SAM input image** (`build_sam_image`): stack the three N1 rasters as channels —
+1. **SAM input image** (`build_sam_image`): stack the three Stage-1 rasters as channels —
    occupancy (free space) / wallness (structure) / coverage (scanned data). A realistic
    top-down built from data already computed; no point cloud needed in this stage. (The
    colourised label map is QA-only and never fed to SAM.)
@@ -203,17 +275,18 @@ imports in `_build_sam3`; nothing else changes.
 ## Assumptions
 
 - Stages share one `CFG`, built once from `params.yaml` by `load_config()`; the transform
-  from Notebook 1 is the single coordinate contract. Cross-stage validation
+  from the preprocessing raster is the single coordinate contract. Cross-stage validation
   (`assert_upstream_config` + `assert_points_in_grid`) enforces that every stage saw the same
   cloud + grid.
-- The cloud loads to metres and voxel-downsamples deterministically, so reloading it in
-  Notebook 3/5 reproduces the same points and stays aligned to Notebook 1's transform.
+- The cloud loads to metres and voxel-downsamples deterministically, so reloading it in any
+  wall-assignment stage reproduces the same points and stays aligned to the Stage-1 transform.
 - The point cloud is an external input, not a produced artifact, so it is not zipped.
-- Notebook 3 (wall assignment) also consumes the watershed `room_labels.npy`, since its
-  step 1 ("obtain room mask `M_i`") needs the masks.
-- Notebook 3 is watershed-only; SAM-refined wall clouds come from **Notebook 5**, which reads
-  `room_labels_refined.npy` from stage 4.
-- SAM is optional: with no backend/checkpoint, Notebook 4 returns the watershed labels.
+- Each wall-assignment stage consumes its method's `room_labels.npy`, since its step 1 ("obtain
+  room mask `M_i`") needs the masks — `geometric/notebook_2` reads the watershed masks,
+  `geometric_SAM/notebook_3` reads the SAM-refined masks, `SAM/notebook_2` (when implemented)
+  reads the SAM auto-segmentation masks.
+- SAM is optional: with no backend/checkpoint, `geometric_SAM/notebook_2_sam_refinement` returns
+  the watershed labels unchanged.
 
 ---
 
@@ -235,10 +308,14 @@ imports in `_build_sam3`; nothing else changes.
 ## Running
 
 Open the project folder in VS Code, create a venv and `pip install -e .`, put your cloud
-at `data/area1.xyz` (or set `input.file_path` in `params.yaml`), then **Run All** on notebooks
-**1 → 2 → 3** locally (CPU) — no cell edits. Each writes `{stage}.zip` under `scan2bim_out/`.
-**Notebook 4 is the GPU stage:** copy `scan2bim/`, `params.yaml`, and the `scan2bim_out/` ZIPs
-to Google Drive and run it in Colab on a GPU (it loads CFG via `load_config()`, validated
-against the stage-2 `config.json`, so its output aligns pixel-for-pixel with the watershed).
-**Notebook 5** turns the SAM-refined masks into wall clouds (`stage5_walls_sam_refined`). See
-the top-level `README.md` / `RUNBOOK.md` for step-by-step setup.
+at `data/area1.xyz` (or set `input.file_path` in `params.yaml`), then **Run All** on
+`preprocessing/notebook_1_occupancy_raster` (CPU) — no cell edits — followed by one method's
+notebooks under `notebooks/methods/`. The pure-**geometric** method
+(`geometric/notebook_1_watershed` → `notebook_2_wall_assignment`) is CPU-only. The
+**SAM-refinement** stage of the geometric+SAM method
+(`geometric_SAM/notebook_2_sam_refinement`) is the GPU step: copy `scan2bim/`, `params.yaml`,
+and the `scan2bim_out/` ZIPs to Google Drive and run it in Colab on a GPU (it loads CFG via
+`load_config()`, validated against the upstream `config.json`, so its output aligns
+pixel-for-pixel with the watershed). `geometric_SAM/notebook_3_wall_assignment` then turns the
+SAM-refined masks into wall clouds (`stage5_walls_sam_refined`). See the top-level `README.md`
+for step-by-step setup.
