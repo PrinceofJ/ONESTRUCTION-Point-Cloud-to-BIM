@@ -126,17 +126,31 @@ def _normals_opposed(g1, g2):
 
 
 def _offset_distance(g1, g2):
-    if _normals_opposed(g1, g2):
-        return abs(g1["offset"] + g2["offset"])
-    return abs(g1["offset"] - g2["offset"])
+    s1 = np.array(g1["start"])
+    e1 = np.array(g1["end"])
+    d1 = e1 - s1
+    length1 = np.linalg.norm(d1)
+    if length1 < 1e-9:
+        return float("inf")
+    n1 = np.array([-d1[1], d1[0]]) / length1
+    mid2 = (np.array(g2["start"]) + np.array(g2["end"])) / 2
+    return float(abs(np.dot(mid2 - s1, n1)))
 
 
 def _u_overlap(g1, g2):
-    u1_min, u1_max = g1["u_min"], g1["u_max"]
-    if _normals_opposed(g1, g2):
-        u2_min, u2_max = -g2["u_max"], -g2["u_min"]
-    else:
-        u2_min, u2_max = g2["u_min"], g2["u_max"]
+    s1 = np.array(g1["start"])
+    e1 = np.array(g1["end"])
+    d1 = e1 - s1
+    length1 = np.linalg.norm(d1)
+    if length1 < 1e-9:
+        return 0.0
+    u_dir = d1 / length1
+    u1_min, u1_max = 0.0, length1
+    s2 = np.array(g2["start"])
+    e2 = np.array(g2["end"])
+    p2a = float(np.dot(s2 - s1, u_dir))
+    p2b = float(np.dot(e2 - s1, u_dir))
+    u2_min, u2_max = min(p2a, p2b), max(p2a, p2b)
     return min(u1_max, u2_max) - max(u1_min, u2_min)
 
 
@@ -301,6 +315,31 @@ def deduplicate_walls(all_room_walls, cfg: IfcExportConfig, angle_tol_deg: float
     for root_idx, indices in groups.items():
         keeper = flat[root_idx].copy()
         keeper_room = keeper["_room"]
+
+        if len(indices) > 1:
+            s1 = np.array(keeper["start"])
+            e1 = np.array(keeper["end"])
+            d1 = e1 - s1
+            length1 = np.linalg.norm(d1)
+            if length1 > 1e-9:
+                u_dir = d1 / length1
+                all_u = [0.0, length1]
+                for idx in indices:
+                    if idx == root_idx:
+                        continue
+                    other = flat[idx]
+                    s2 = np.array(other["start"])
+                    e2 = np.array(other["end"])
+                    all_u.append(float(np.dot(s2 - s1, u_dir)))
+                    all_u.append(float(np.dot(e2 - s1, u_dir)))
+                new_u_min = min(all_u)
+                new_u_max = max(all_u)
+                keeper["start"] = (s1 + u_dir * new_u_min).tolist()
+                keeper["end"] = (s1 + u_dir * new_u_max).tolist()
+                keeper["length"] = new_u_max - new_u_min
+                keeper["u_min"] = keeper["u_min"] + new_u_min
+                keeper["u_max"] = keeper["u_min"] + keeper["length"]
+
         keeper_u_min = keeper["u_min"]
 
         sides: dict[str, list] = {}

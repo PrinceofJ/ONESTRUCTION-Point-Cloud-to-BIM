@@ -159,8 +159,8 @@ class IfcExportConfig:
     # merge / dedup
     default_thickness: float = 0.15
     exterior_thickness: float = 0.30
-    max_merge_thickness: float = 0.35
-    dedup_offset_tol: float = 0.15
+    max_merge_thickness: float = 0.45
+    dedup_offset_tol: float = 0.45
     dedup_overlap_frac: float = 0.10
 
     # endpoint snapping

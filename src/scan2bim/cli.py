@@ -56,10 +56,10 @@ def run(input_path, out_dir, config_path, no_sam, no_ifc, verbose):
     from .io import load_point_cloud
     from .room_segmentation import run_room_segmentation
     from .wall_segmentation import run_wall_segmentation
-    from .wall_image_processing import run_wall_image_processing
+    # from .wall_image_processing import run_wall_image_processing
     from .ifc_export import build_building_json, build_ifc
 
-    click.echo(f"[1/4] Room segmentation: {input_path}")
+    click.echo(f"[1/3] Room segmentation: {input_path}")
     room_cloud_dir = os.path.join(out_dir, "room_clouds")
     pcd, points = load_point_cloud(
         input_path,
@@ -70,19 +70,20 @@ def run(input_path, out_dir, config_path, no_sam, no_ifc, verbose):
     n_rooms = len([r for r in rooms if len(r["points"]) > 0])
     click.echo(f"  → {n_rooms} rooms")
 
-    click.echo("[2/4] Wall segmentation")
+    click.echo("[2/3] Wall segmentation")
     wall_image_dir = os.path.join(out_dir, "wall_images")
     room_cloud_paths = sorted(glob.glob(os.path.join(room_cloud_dir, "room_*_walls.ply")))
     wall_results = run_wall_segmentation(room_cloud_paths, cfg.wall_seg, wall_image_dir)
     total_walls = sum(len(v) for v in wall_results.values())
     click.echo(f"  → {total_walls} wall images across {len(wall_results)} rooms")
 
-    click.echo("[3/4] Wall image processing (door/window detection)")
-    openings_dir = os.path.join(out_dir, "openings")
-    run_wall_image_processing(wall_image_dir, cfg.wall_proc, openings_dir, use_sam=not no_sam)
+    # TODO: re-enable door/window detection
+    # click.echo("[3/4] Wall image processing (door/window detection)")
+    # openings_dir = os.path.join(out_dir, "openings")
+    # run_wall_image_processing(wall_image_dir, cfg.wall_proc, openings_dir, use_sam=not no_sam)
 
-    click.echo("[4/4] IFC export")
-    building_json = build_building_json(room_cloud_paths, openings_dir, cfg.wall_seg, cfg.ifc_export,
+    click.echo("[3/3] IFC export")
+    building_json = build_building_json(room_cloud_paths, None, cfg.wall_seg, cfg.ifc_export,
                                            wall_image_dir=wall_image_dir)
 
     json_path = os.path.join(out_dir, "building.json")
@@ -260,7 +261,7 @@ def from_rooms(room_cloud_dir, out_dir, config_path, no_sam, verbose):
         out_dir = os.path.dirname(os.path.abspath(room_cloud_dir))
 
     from .wall_segmentation import run_wall_segmentation
-    from .wall_image_processing import run_wall_image_processing
+    # from .wall_image_processing import run_wall_image_processing
     from .ifc_export import build_building_json, build_ifc
 
     paths = sorted(glob.glob(os.path.join(room_cloud_dir, "room_*_walls.ply")))
@@ -270,18 +271,19 @@ def from_rooms(room_cloud_dir, out_dir, config_path, no_sam, verbose):
         click.echo(f"No .ply files found in {room_cloud_dir}", err=True)
         sys.exit(1)
 
-    click.echo(f"[1/3] Wall segmentation ({len(paths)} rooms)")
+    click.echo(f"[1/2] Wall segmentation ({len(paths)} rooms)")
     wall_image_dir = os.path.join(out_dir, "wall_images")
     wall_results = run_wall_segmentation(paths, cfg.wall_seg, wall_image_dir)
     total_walls = sum(len(v) for v in wall_results.values())
     click.echo(f"  → {total_walls} wall images across {len(wall_results)} rooms")
 
-    click.echo("[2/3] Wall image processing (door/window detection)")
-    openings_dir = os.path.join(out_dir, "openings")
-    run_wall_image_processing(wall_image_dir, cfg.wall_proc, openings_dir, use_sam=not no_sam)
+    # TODO: re-enable door/window detection
+    # click.echo("[2/3] Wall image processing (door/window detection)")
+    # openings_dir = os.path.join(out_dir, "openings")
+    # run_wall_image_processing(wall_image_dir, cfg.wall_proc, openings_dir, use_sam=not no_sam)
 
-    click.echo("[3/3] IFC export")
-    building_json = build_building_json(paths, openings_dir, cfg.wall_seg, cfg.ifc_export,
+    click.echo("[2/2] IFC export")
+    building_json = build_building_json(paths, None, cfg.wall_seg, cfg.ifc_export,
                                         wall_image_dir=wall_image_dir)
 
     json_path = os.path.join(out_dir, "building.json")
