@@ -205,6 +205,9 @@ def show_floor_plan(building_json):
         sx, sy = wall["start"]
         ex, ey = wall["end"]
         ax.plot([sx, ex], [sy, ey], "k-", linewidth=2)
+        mx, my = (sx + ex) / 2, (sy + ey) / 2
+        ax.annotate(wall["id"], (mx, my), fontsize=6, color="red",
+                    ha="center", va="bottom", fontweight="bold")
 
     for door in data.get("doors", []):
         wall = next((w for w in data["walls"] if w["id"] == door["wall"]), None)
@@ -219,6 +222,8 @@ def show_floor_plan(building_json):
         dx = sx + ux * door["offset"]
         dy = sy + uy * door["offset"]
         ax.plot(dx, dy, "s", color="dodgerblue", markersize=8)
+        ax.annotate(f'{door["id"]}({door["wall"]})', (dx, dy), fontsize=5,
+                    color="dodgerblue", ha="center", va="top")
 
     for win in data.get("windows", []):
         wall = next((w for w in data["walls"] if w["id"] == win["wall"]), None)
@@ -233,6 +238,8 @@ def show_floor_plan(building_json):
         wx = sx + ux * win["offset"]
         wy = sy + uy * win["offset"]
         ax.plot(wx, wy, "D", color="orange", markersize=8)
+        ax.annotate(f'{win["id"]}({win["wall"]})', (wx, wy), fontsize=5,
+                    color="orange", ha="center", va="top")
 
     for room in data.get("rooms", []):
         bnd = room.get("boundary", [])

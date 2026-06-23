@@ -10,8 +10,6 @@ import os
 
 import numpy as np
 import open3d as o3d
-from scipy.ndimage import uniform_filter1d
-from scipy.signal import find_peaks
 
 from .config import WallSegConfig, IfcExportConfig
 
@@ -19,62 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Wall segmentation (lightweight copy for re-segmenting room clouds)
+# Wall segmentation bridge
 # ---------------------------------------------------------------------------
-
-def _cluster_1d_gaps(values, tol):
-    if len(values) == 0:
-        return np.array([], dtype=int)
-    order = np.argsort(values)
-    sorted_v = values[order]
-    labels_sorted = np.zeros(len(sorted_v), dtype=int)
-    label = 0
-    for i in range(1, len(sorted_v)):
-        if sorted_v[i] - sorted_v[i - 1] > tol:
-            label += 1
-        labels_sorted[i] = label
-    result = np.empty(len(values), dtype=int)
-    result[order] = labels_sorted
-    return result
-
-
-def _find_angle_peaks(theta, n_bins=180, smooth_width=5, min_height_frac=0.08):
-    counts, edges = np.histogram(theta, bins=n_bins, range=(0, np.pi))
-    centres = 0.5 * (edges[:-1] + edges[1:])
-    tiled = np.concatenate([counts, counts, counts])
-    smoothed_tiled = uniform_filter1d(tiled.astype(float), size=smooth_width)
-    height_thr = smoothed_tiled[n_bins : 2 * n_bins].max() * min_height_frac
-    min_dist = max(1, int(15 / (180 / n_bins)))
-    all_peaks, _ = find_peaks(smoothed_tiled, height=height_thr, distance=min_dist)
-    peak_bins: list[int] = []
-    for p in all_peaks:
-        bin_idx = p % n_bins
-        if bin_idx not in peak_bins:
-            peak_bins.append(bin_idx)
-    final_bins: list[int] = []
-    for b in peak_bins:
-        merged = False
-        for i, fb in enumerate(final_bins):
-            circ_dist = min(abs(b - fb), n_bins - abs(b - fb))
-            if circ_dist < min_dist:
-                if smoothed_tiled[n_bins + b] > smoothed_tiled[n_bins + fb]:
-                    final_bins[i] = b
-                merged = True
-                break
-        if not merged:
-            final_bins.append(b)
-    if final_bins:
-        return centres[np.array(final_bins, dtype=int)]
-    return np.array([])
-
-
-def _assign_to_nearest_peak(theta, peak_centres):
-    labels = np.empty(len(theta), dtype=int)
-    for i, t in enumerate(theta):
-        dists = np.minimum(np.abs(peak_centres - t), np.pi - np.abs(peak_centres - t))
-        labels[i] = np.argmin(dists)
-    return labels
-
 
 def segment_walls_for_ifc(pcd, wall_seg_cfg: WallSegConfig):
     """Segment walls from a room cloud (returns walls list + n_directions).
@@ -177,10 +121,29 @@ def _angle_close(a1, a2, tol_rad):
     return min(diff, np.pi - diff) < tol_rad
 
 
+def _normals_opposed(g1, g2):
+    return np.dot(g1["normal_2d"], g2["normal_2d"]) < 0
+
+
+def _offset_distance(g1, g2):
+    if _normals_opposed(g1, g2):
+        return abs(g1["offset"] + g2["offset"])
+    return abs(g1["offset"] - g2["offset"])
+
+
+def _u_overlap(g1, g2):
+    u1_min, u1_max = g1["u_min"], g1["u_max"]
+    if _normals_opposed(g1, g2):
+        u2_min, u2_max = -g2["u_max"], -g2["u_min"]
+    else:
+        u2_min, u2_max = g2["u_min"], g2["u_max"]
+    return min(u1_max, u2_max) - max(u1_min, u2_min)
+
+
 def _walls_spatially_close(g1, g2, tol=0.5):
     s1, e1 = np.array(g1["start"]), np.array(g1["end"])
     s2, e2 = np.array(g2["start"]), np.array(g2["end"])
-    if (min(g1["u_max"], g2["u_max"]) - max(g1["u_min"], g2["u_min"])) > 0:
+    if _u_overlap(g1, g2) > 0:
         return True
     return (np.linalg.norm(s1 - s2) < tol or np.linalg.norm(s1 - e2) < tol
             or np.linalg.norm(e1 - s2) < tol or np.linalg.norm(e1 - e2) < tol)
@@ -206,14 +169,13 @@ def merge_wall_faces(wall_geos, cfg: IfcExportConfig, angle_tol_deg: float = 10.
         for j in range(i + 1, n):
             if not _angle_close(wall_geos[i]["angle"], wall_geos[j]["angle"], angle_tol):
                 continue
-            if abs(wall_geos[i]["offset"] - wall_geos[j]["offset"]) > cfg.max_merge_thickness:
+            if _offset_distance(wall_geos[i], wall_geos[j]) > cfg.max_merge_thickness:
                 continue
             if not _walls_spatially_close(wall_geos[i], wall_geos[j]):
                 continue
-            u_overlap = (min(wall_geos[i]["u_max"], wall_geos[j]["u_max"])
-                         - max(wall_geos[i]["u_min"], wall_geos[j]["u_min"]))
+            overlap = _u_overlap(wall_geos[i], wall_geos[j])
             min_len = min(wall_geos[i]["length"], wall_geos[j]["length"])
-            if min_len > 0 and u_overlap / min_len < 0.3:
+            if min_len > 0 and overlap / min_len < 0.3:
                 continue
             union(i, j)
 
@@ -315,11 +277,11 @@ def deduplicate_walls(all_room_walls, cfg: IfcExportConfig, angle_tol_deg: float
         for j in range(i + 1, n):
             if not _angle_close(flat[i]["angle"], flat[j]["angle"], angle_tol):
                 continue
-            if abs(flat[i]["offset"] - flat[j]["offset"]) > cfg.dedup_offset_tol:
+            if _offset_distance(flat[i], flat[j]) > cfg.dedup_offset_tol:
                 continue
             if not _walls_spatially_close(flat[i], flat[j]):
                 continue
-            u_gap = max(flat[i]["u_min"], flat[j]["u_min"]) - min(flat[i]["u_max"], flat[j]["u_max"])
+            u_gap = -_u_overlap(flat[i], flat[j])
             if u_gap > cfg.dedup_offset_tol:
                 continue
             logger.debug(
@@ -327,7 +289,7 @@ def deduplicate_walls(all_room_walls, cfg: IfcExportConfig, angle_tol_deg: float
                 "off_diff=%.3f  u_gap=%.2f",
                 flat[i]["_room"], flat[i]["_idx"], flat[i]["length"],
                 flat[j]["_room"], flat[j]["_idx"], flat[j]["length"],
-                abs(flat[i]["offset"] - flat[j]["offset"]), u_gap,
+                _offset_distance(flat[i], flat[j]), u_gap,
             )
             union(i, j)
 
@@ -453,6 +415,9 @@ def _match_wall_to_merged(wall_meta_entry, merged_walls, angle_tol_deg=15.0, off
     src_u_max = wall_meta_entry["u_max"]
     angle_tol = np.deg2rad(angle_tol_deg)
 
+    src_geo = {"normal_2d": src_n, "offset": src_offset,
+               "u_min": src_u_min, "u_max": src_u_max}
+
     best_idx = None
     best_score = float("inf")
     for mi, mw in enumerate(merged_walls):
@@ -461,11 +426,11 @@ def _match_wall_to_merged(wall_meta_entry, merged_walls, angle_tol_deg=15.0, off
         angle_diff = min(angle_diff, np.pi - angle_diff)
         if angle_diff > angle_tol:
             continue
-        off_diff = abs(mw["offset"] - src_offset)
+        off_diff = _offset_distance(src_geo, mw)
         if off_diff > offset_tol:
             continue
-        u_overlap = min(src_u_max, mw["u_max"]) - max(src_u_min, mw["u_min"])
-        if u_overlap < -offset_tol:
+        overlap = _u_overlap(src_geo, mw)
+        if overlap < -offset_tol:
             continue
         score = off_diff + angle_diff
         if score < best_score:
@@ -495,11 +460,18 @@ def attach_openings(merged_walls, wall_meta, room_openings, pixel_m):
             if merged_idx is None:
                 logger.debug("  Opening on %s: no matching merged wall found", wall_name)
                 continue
-            src_u_min = wm["u_min"]
-            u_shift = src_u_min - merged_walls[merged_idx]["u_min"]
+            mw = merged_walls[merged_idx]
+            src_n = np.array(wm["normal_2d"])
+            opposed = np.dot(src_n, mw["normal_2d"]) < 0
+            if opposed:
+                src_u_min = -wm["u_max"]
+            else:
+                src_u_min = wm["u_min"]
+            u_shift = src_u_min - mw["u_min"]
         else:
             seg_idx = int(wall_name.replace("wall_", "")) - 1 if wall_name.startswith("wall_") else -1
             merged_idx = None
+            opposed = False
             for mi, mw in enumerate(merged_walls):
                 if seg_idx in mw.get("source_indices", []):
                     merged_idx = mi
@@ -512,6 +484,9 @@ def attach_openings(merged_walls, wall_meta, room_openings, pixel_m):
             if op["label"] not in ("door", "window"):
                 continue
             offset_m = op.get("offset_m", op["bbox_px"][0] * pixel_m)
+            if opposed:
+                src_length = wm["u_max"] - wm["u_min"]
+                offset_m = src_length - offset_m - op["width_m"]
             opening = {
                 "label": op["label"],
                 "offset": round(offset_m + u_shift, 3),
@@ -520,8 +495,6 @@ def attach_openings(merged_walls, wall_meta, room_openings, pixel_m):
                 "sill_height": op.get("sill_m", 0.0),
             }
             merged_walls[merged_idx]["_openings"].append(opening)
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -795,6 +768,75 @@ def snap_wall_endpoints(walls, tol=0.15):
     return walls
 
 
+def extend_walls_to_corners(walls, max_extend_m=0.50):
+    """Extend wall endpoints to meet perpendicular walls at corners.
+
+    For each free endpoint (not already touching another wall), find the
+    nearest perpendicular wall line and extend this wall to intersect it.
+    """
+    extended = 0
+    for i in range(len(walls)):
+        si = np.array(walls[i]["start"])
+        ei = np.array(walls[i]["end"])
+        di = ei - si
+        len_i = np.linalg.norm(di)
+        if len_i < 0.01:
+            continue
+        di_hat = di / len_i
+
+        for ki, pt, sign in [("start", si, -1.0), ("end", ei, 1.0)]:
+            touching = False
+            for j in range(len(walls)):
+                if i == j:
+                    continue
+                for kj in ("start", "end"):
+                    if np.linalg.norm(np.array(walls[j][kj]) - pt) < 0.05:
+                        touching = True
+                        break
+                if touching:
+                    break
+            if touching:
+                continue
+
+            best_dist = max_extend_m
+            best_pt = None
+            for j in range(len(walls)):
+                if i == j:
+                    continue
+                sj = np.array(walls[j]["start"])
+                ej = np.array(walls[j]["end"])
+                dj = ej - sj
+                len_j = np.linalg.norm(dj)
+                if len_j < 0.01:
+                    continue
+
+                cross_val = di_hat[0] * dj[1] - di_hat[1] * dj[0]
+                if abs(cross_val) < 0.3 * len_j:
+                    continue
+
+                diff = sj - pt
+                t_i = (diff[0] * dj[1] - diff[1] * dj[0]) / cross_val
+                t_j = (diff[0] * di_hat[1] - diff[1] * di_hat[0]) / cross_val
+
+                if t_j < -0.1 or t_j > 1.1:
+                    continue
+                if sign * t_i < -0.01:
+                    continue
+                dist = abs(t_i)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_pt = (pt + t_i * di_hat).tolist()
+
+            if best_pt is not None:
+                walls[i][ki] = best_pt
+                extended += 1
+
+    if extended:
+        logger.info("Extended %d wall endpoints to meet corners (max %.2fm)",
+                    extended, max_extend_m)
+    return walls
+
+
 # ---------------------------------------------------------------------------
 # JSON builder
 # ---------------------------------------------------------------------------
@@ -920,6 +962,7 @@ def build_building_json(
                 pre_dedup_count, len(unique_walls), pre_dedup_count - len(unique_walls))
 
     unique_walls = snap_wall_endpoints(unique_walls, tol=ifc_cfg.snap_tolerance_m)
+    unique_walls = extend_walls_to_corners(unique_walls)
 
     all_heights = sorted([w["height"] for w in unique_walls])
     if all_heights:
@@ -1033,7 +1076,7 @@ def build_ifc(data: dict, out_path: str = "model.ifc",
                               Items=[solid])
         return m.create_entity("IfcProductDefinitionShape", Representations=[rep])
 
-    def _polygon(body, pts, height):  # noqa: kept for potential future use
+    def _polygon(body, pts, height):
         ifc_pts = [_pt((p[0], p[1])) for p in pts]
         ifc_pts.append(ifc_pts[0])
         curve = m.create_entity("IfcPolyline", Points=ifc_pts)
