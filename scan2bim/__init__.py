@@ -15,11 +15,12 @@ raster       : occupancy / wallness / coverage rasters + pixel<->world transform
 watershed    : Pass-1 deterministic watershed segmentation
 walls        : wall-mask cleanup + NEW boundary-ring wall assignment + back-projection
 sam_refine   : model-agnostic PROMPTED SAM refinement (graph relabel: merge / split)
+sam_auto     : pure-SAM AUTOMATIC room segmentation (Method 2; segment-everything)
 viz          : optional debug/QA plots
 artifacts    : structured save/load + ZIP packaging + shared filename constants
 """
 
-from . import config, io_utils, slab, raster, watershed, walls, sam_refine, viz, artifacts
+from . import config, io_utils, slab, raster, watershed, walls, sam_refine, sam_auto, viz, artifacts
 from . import runconfig
 from .config import Config
 
@@ -37,9 +38,12 @@ from .walls import (clean_wall_mask, seal_at_doors, room_wall_masks_boundary_rin
                     room_footprints, split_rooms_to_clouds)
 from .sam_refine import (MaskGenerator, build_mask_generator, refine_with_sam,
                          build_sam_image, relabel_by_sam)
+from .sam_auto import (AutoMaskGenerator, build_auto_mask_generator,
+                       segment_rooms_sam_auto, masks_to_room_labels,
+                       classify_rooms_by_area, buffer_room_labels, reprocess_residual)
 
 __all__ = [
-    'config', 'io_utils', 'slab', 'raster', 'watershed', 'walls', 'sam_refine',
+    'config', 'io_utils', 'slab', 'raster', 'watershed', 'walls', 'sam_refine', 'sam_auto',
     'viz', 'artifacts', 'runconfig', 'Config',
     'project_root', 'load_config', 'assert_upstream_config', 'assert_points_in_grid',
     'load_point_cloud', 'estimate_ceiling', 'estimate_local_ceilings', 'crop_vertical',
@@ -50,6 +54,9 @@ __all__ = [
     'resolve_ring_radii_px', 'fit_walls_in_room', 'room_footprints',
     'split_rooms_to_clouds', 'MaskGenerator', 'build_mask_generator', 'refine_with_sam',
     'build_sam_image', 'relabel_by_sam',
+    'AutoMaskGenerator', 'build_auto_mask_generator', 'segment_rooms_sam_auto',
+    'masks_to_room_labels', 'classify_rooms_by_area', 'buffer_room_labels',
+    'reprocess_residual',
 ]
 
 __version__ = '1.0.0'

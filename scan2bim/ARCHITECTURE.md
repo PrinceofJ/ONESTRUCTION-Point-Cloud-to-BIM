@@ -13,7 +13,7 @@ notebooks/
 ├── preprocessing/   one shared stage 1 (occupancy raster) feeding every method
 ├── methods/
 │   ├── geometric/      METHOD 1 — deterministic watershed only
-│   ├── SAM/            METHOD 2 — SAM auto-segmentation, no geometric prior  (stubs)
+│   ├── SAM/            METHOD 2 — SAM auto-segmentation, no geometric prior  (Colab/GPU)
 │   └── geometric_SAM/  METHOD 3 — watershed prior + prompted-SAM refinement
 ├── converters/      input data-prep (S3DIS → structural .ply)
 └── evaluation/      Panoptic-Quality scoring (shared; scores every method vs. one GT)
@@ -47,7 +47,7 @@ preprocessing/notebook_1_occupancy_raster   →  stage1_occupancy   (shared by a
       │     notebook_1_watershed              →  stage2_watershed
       │     notebook_2_wall_assignment        →  stage3_walls
       │
-      ├─ METHOD 2  SAM/                                              (stubs — not implemented)
+      ├─ METHOD 2  SAM/                                              (pure SAM; GPU)
       │     notebook_1_sam_auto_segmentation  →  stage_sam_auto
       │     notebook_2_wall_assignment        →  stage_sam_walls
       │
@@ -104,22 +104,35 @@ that the reloaded cloud lands inside the upstream raster (`assert_points_in_grid
 - **Out:** `room_XX_walls.ply` per room, `room_wall_masks.npz`, `room_labels.npy`,
   `transform.json`, `config.json`.
 
-### Method 2 — SAM (`methods/SAM/`)  ⟨stubs — not implemented⟩
+### Method 2 — SAM (`methods/SAM/`)
+
+The paper's pure-SAM room pipeline (Albadri et al., ISPRS 2025, §3.1). Logic lives in
+`scan2bim.sam_auto`; the model (SAM's automatic mask generator) is isolated behind one
+`AutoMaskGenerator` adapter, and everything else is a pure, unit-tested function over plain
+arrays (`tests/test_sam_auto.py`) — the same model/math split as `sam_refine`.
 
 #### `notebook_1_sam_auto_segmentation`  (`stage_sam_auto`, GPU/Colab)
-- **Should:** run SAM in automatic "segment everything" mode on the Stage-1 rasters (no
-  watershed prior, no prompts) and turn the masks into `room_labels.npy` on the Stage-1 grid.
-- **In:** `wallness.npy`, `coverage.npy`, `transform.json` (stage 1); a SAM checkpoint.
-- **Out (intended):** `room_labels.npy`, `room_labels_color.png`, `transform.json`,
-  `config.json`. *(Bootstrap + TODO block only at present; logic belongs in a new
-  `scan2bim.sam_auto` module.)*
+- **Does:** runs SAM in automatic "segment everything" mode on the Stage-1 rasters (no
+  watershed prior, no prompts) via `segment_rooms_sam_auto`, then deterministically:
+  drops masks below the px noise floor, drops the exterior background mask via `coverage`,
+  resolves overlaps (higher predicted-IoU wins; order-independent), re-imposes `-1` on every
+  wall pixel, classifies room/not-room by area (`A = sam_auto_min_room_area_m2`, paper 1.5 m²),
+  and — when enabled in `params.yaml` — does corridor reprocessing (`sam_reprocess_residual`,
+  paper §4.2) and/or the outward boundary buffer (`sam_auto_buffer_rooms`, paper `do`). SAM's
+  Table-1 params are `Config` fields (`sam_points_per_side`, `sam_pred_iou_thresh`, …).
+- **In:** `occupancy.png`, `wallness.npy`, `coverage.npy`, `transform.json` (stage 1); a SAM
+  checkpoint. **Requires a real SAM backend** — fails loudly on no GPU/checkpoint
+  (`debug['ran']` is False) rather than passing through; pure-SAM with no SAM is meaningless.
+- **Out:** `room_labels.npy` (Stage-1 grid), `room_labels_color.png`, `transform.json`,
+  `config.json`.
 
 #### `notebook_2_wall_assignment`  (`stage_sam_walls`)
-- **Should:** the identical boundary-ring assignment, on the SAM-method masks from
-  `stage_sam_auto`. Same call as the geometric method — only the mask source differs.
+- **Does:** the identical boundary-ring assignment (`room_wall_masks_boundary_ring`), on the
+  SAM-method masks from `stage_sam_auto`. Same call as the geometric method — only the mask
+  source differs — then back-projects within the floor↔ceiling band.
 - **In:** `wallness.npy` + `transform.json` (stage 1), `room_labels.npy` (`stage_sam_auto`),
   the point cloud.
-- **Out (intended):** same artifact set as the geometric wall-assignment, to `stage_sam_walls/`.
+- **Out:** same artifact set as the geometric wall-assignment, to `stage_sam_walls/`.
 
 ### Method 3 — geometric + SAM (`methods/geometric_SAM/`)
 
@@ -156,8 +169,8 @@ that the reloaded cloud lands inside the upstream raster (`assert_points_in_grid
 
 Short labels: **Pre** = `preprocessing/notebook_1_occupancy_raster`; **G·ws / G·wa** =
 `geometric/` watershed / wall-assignment; **GS·ws / GS·ref / GS·wa** = `geometric_SAM/`
-watershed / sam-refinement / wall-assignment. (The `SAM/` method stubs will mirror G with
-`stage_sam_auto → stage_sam_walls`.)
+watershed / sam-refinement / wall-assignment; **S·auto / S·wa** = `SAM/` auto-segmentation /
+wall-assignment (`stage_sam_auto → stage_sam_walls`, mirroring G's two-stage shape).
 
 | Artifact (stage)                                  | Produced by | Consumed by                         |
 |---------------------------------------------------|-------------|-------------------------------------|

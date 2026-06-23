@@ -11,7 +11,7 @@
 # ============================================================================
 
 input:
-  file_path: data/area3.xyz                # S3DIS Area 3 FULL (non-segmented) original capture
+  file_path: data/area1.xyz             # S3DIS Area 3 FULL (non-segmented) original capture
   units_per_meter: 1.0           # raw units per metre (1.0 if already in metres)
 
 output:
@@ -28,7 +28,7 @@ watershed:
 
 slab:
   slab_lo_m: 0.1                 # shallower wall-height band edge (closer to ceiling)
-  slab_hi_m: 0.5                 # deeper band edge
+  slab_hi_m: 0.2                 # deeper band edge
 
 walls:
   room_erode_m: 0.125            # boundary-ring erosion radius (= ring thickness)

@@ -127,6 +127,43 @@ class Config:
     sam_refine_qa_cloud: bool = False      # load the cloud in N4 only for optional QA
 
     # =====================================================================
+    # NEW — pure-SAM automatic room segmentation (Method 2; paper Table 1 / §3.1)
+    # =====================================================================
+    # The pure-SAM method runs SAM in AUTOMATIC "segment everything" mode (NO watershed
+    # prior, NO prompts) on the SAME Stage-1 rasters the other two methods consume, so
+    # every method emits room_labels.npy on one shared grid -> a clean three-way
+    # comparison with zero resampling. This is distinct from the PROMPTED refinement above
+    # (use_sam_recall / sam_conf_thresh / ...). The SAM backend + checkpoint fields
+    # (sam_backend, sam_arch, sam_ckpt, sam_model_cfg) are SHARED with the refinement.
+    #
+    # SAM automatic-mask-generator parameters (paper Table 1). points_per_side is the one
+    # the paper tuned per case study (11/15/30); the rest were held fixed across CS1-3.
+    sam_points_per_side: int = 15               # paper 'points_': 11 (CS1) / 15 (CS2) / 30 (CS3)
+    sam_pred_iou_thresh: float = 0.85           # paper 'iou_'
+    sam_stability_score_thresh: float = 0.95    # paper 'stability_'
+    sam_crop_n_layers: int = 1                  # paper 'n_layers'
+    sam_crop_n_points_downscale_factor: int = 2  # paper 'down_factor'
+    sam_min_mask_region_area: int = 100         # paper 'min_mask' (px) — raw-mask noise floor
+
+    # room / not-room classification (paper §3.1; the 'A' threshold). Kept SEPARATE from the
+    # watershed's min_room_area_m2 (1.0) so each method uses its own faithful value.
+    sam_auto_min_room_area_m2: float = 1.5      # paper 'A' = 1.5 m^2
+    # drop a mask whose pixels sit mostly OFF scanned coverage (exterior / unscanned void):
+    sam_auto_min_coverage_frac: float = 0.5     # keep a mask only if >= this frac is on coverage
+
+    # raster boundary buffer (paper 'do' = half wall thickness). OFF by default: our
+    # downstream boundary-ring wall-assignment already recovers wall points in 3-D, and
+    # keeping walls as hard -1 barriers matches the other two methods' label convention
+    # exactly (apples-to-apples pq_eval). Reuses do_buffer_m / do_buffer_px when enabled.
+    sam_auto_buffer_rooms: bool = False
+
+    # corridor reprocessing (paper §4.2): re-run SAM on the residual free space with a
+    # sparser point grid to catch corridors the first pass missed. OFF by default so the
+    # single-pass baseline is clean; enable for the paper-faithful two-pass result.
+    sam_reprocess_residual: bool = False
+    sam_residual_points_per_side: int = 5       # paper points_=5 on the residual
+
+    # =====================================================================
     # NEW — structured outputs / staging
     # =====================================================================
     out_root: str = 'scan2bim_out'  # NEW: base output dir; local relative path (set via os.path.join(PROJECT_ROOT, ...) in notebooks)

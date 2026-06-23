@@ -65,7 +65,7 @@ picks a method under `notebooks/methods/`:
 | Method | Folder | How rooms are segmented | GPU? |
 |--------|--------|-------------------------|------|
 | **Geometric** | `methods/geometric/` | deterministic distance-transform watershed | no (CPU) |
-| **SAM** | `methods/SAM/` | SAM automatic "segment everything", no geometric prior | yes *(stubs — not implemented yet)* |
+| **SAM** | `methods/SAM/` | SAM automatic "segment everything", no geometric prior | yes (SAM stage in Colab) |
 | **Geometric + SAM** | `methods/geometric_SAM/` | watershed prior, then **prompted** SAM refinement | yes (SAM stage in Colab) |
 
 Each method writes to its **own** stage directories under `scan2bim_out/`, so the three never
@@ -88,7 +88,7 @@ onestruction/                 ← open THIS folder in VS Code  (File ▸ Open Fo
 │   │   ├── geometric/        ← METHOD 1 — watershed only (CPU)
 │   │   │   ├── notebook_1_watershed.ipynb
 │   │   │   └── notebook_2_wall_assignment.ipynb
-│   │   ├── SAM/              ← METHOD 2 — SAM auto-segmentation, no geometric prior  [STUBS]
+│   │   ├── SAM/              ← METHOD 2 — SAM auto-segmentation, no geometric prior  (Colab/GPU)
 │   │   │   ├── notebook_1_sam_auto_segmentation.ipynb
 │   │   │   └── notebook_2_wall_assignment.ipynb
 │   │   └── geometric_SAM/   ← METHOD 3 — watershed prior + prompted-SAM refinement
@@ -151,8 +151,9 @@ Drop your **segmented point cloud** here (walls / windows / doors), named `area1
 - **Geometric** (`methods/geometric/`, CPU): `notebook_1_watershed` → `notebook_2_wall_assignment`.
 - **Geometric + SAM** (`methods/geometric_SAM/`): `notebook_1_watershed` →
   `notebook_2_sam_refinement` (Colab/GPU) → `notebook_3_wall_assignment`.
-- **SAM** (`methods/SAM/`): `notebook_1_sam_auto_segmentation` → `notebook_2_wall_assignment`.
-  *(Stubs — bootstrap cell + TODO block only, not implemented yet.)*
+- **SAM** (`methods/SAM/`): `notebook_1_sam_auto_segmentation` (Colab/GPU) →
+  `notebook_2_wall_assignment`. Pure-SAM needs a real SAM backend — `notebook_1` fails loudly
+  on no GPU/checkpoint rather than emitting an empty map.
 
 The watershed is each geometric-flavoured method's first stage because wall assignment needs its
 room masks; see `scan2bim/ARCHITECTURE.md`. Each notebook's last cell prints
@@ -170,8 +171,8 @@ scan2bim_out/
 ├── stage4_sam_refined/               │   (SAM refinement — Colab/GPU)
 ├── stage5_walls_sam_refined/         ┘   (walls on SAM-refined masks)
 │
-├── stage_sam_auto/                   ┐ SAM  (produced once the stubs are
-└── stage_sam_walls/                  ┘       implemented)
+├── stage_sam_auto/                   ┐ SAM  (automatic-mask room labels — Colab/GPU)
+└── stage_sam_walls/                  ┘       (walls on the SAM auto masks)
 ```
 
 The geometric + SAM watershed writes `stage_geometric_sam_watershed/` (not `stage2_watershed/`)

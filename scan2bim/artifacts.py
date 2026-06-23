@@ -26,6 +26,13 @@ STAGE3 = 'stage3_walls'
 STAGE4 = 'stage4_sam_refined'
 STAGE5 = 'stage5_walls_sam_refined'   # N3 re-run on SAM-refined masks (Option B)
 
+# ---- pure-SAM method (Method 2) stage names ----
+# Runs OFF the shared Stage-1 rasters (no watershed), so it has its own two-stage chain:
+#   stage_sam_auto  : automatic-mask room labels (room_labels.npy on the Stage-1 grid)
+#   stage_sam_walls : boundary-ring wall assignment on those masks (same logic as STAGE3)
+STAGE_SAM_AUTO = 'stage_sam_auto'
+STAGE_SAM_WALLS = 'stage_sam_walls'
+
 # ---- canonical artifact filenames ----
 TRANSFORM_JSON = 'transform.json'      # grid transform + floor/ceil + provenance
 CONFIG_JSON = 'config.json'            # full Config snapshot
