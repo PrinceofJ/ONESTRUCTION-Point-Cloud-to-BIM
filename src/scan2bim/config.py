@@ -166,6 +166,7 @@ class IfcExportConfig:
 
     # endpoint snapping
     snap_tolerance_m: float = 0.15
+    corner_tolerance_m: float = 0.50
 
     # IFC output
     project_name: str = "Scanned Building"

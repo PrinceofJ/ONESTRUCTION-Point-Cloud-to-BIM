@@ -409,6 +409,10 @@ def deduplicate_walls(all_room_walls, cfg: IfcExportConfig, angle_tol_deg: float
                     deduped.append(clean)
             keeper["_openings"] = deduped
 
+        rooms_set = set()
+        for idx in indices:
+            rooms_set.add(flat[idx]["_room"])
+        keeper["_rooms"] = sorted(rooms_set)
         keeper.pop("_room", None)
         keeper.pop("_idx", None)
         unique_walls.append(keeper)
@@ -973,7 +977,7 @@ def extend_walls_to_corners(walls, max_extend_m=0.50):
 
                 if t_j < -0.1 or t_j > 1.1:
                     continue
-                if sign * t_i < -0.01:
+                if sign * t_i < -max_extend_m:
                     continue
                 dist = abs(t_i)
                 if dist < best_dist:
@@ -1253,10 +1257,18 @@ def build_building_json(
                 wall_dir = -wall_dir
             mid = (s + e) / 2.0
             offset = float(np.dot(mid, n2d))
-            half_len = float(np.linalg.norm(e - s)) / 2.0
-            u_mid = float(np.dot(mid, wall_dir))
-            w["start"] = (( u_mid - half_len) * wall_dir + offset * n2d).tolist()
-            w["end"] = ((u_mid + half_len) * wall_dir + offset * n2d).tolist()
+            u_s = float(np.dot(s, wall_dir))
+            u_e = float(np.dot(e, wall_dir))
+            w["start"] = (u_s * wall_dir + offset * n2d).tolist()
+            w["end"] = (u_e * wall_dir + offset * n2d).tolist()
+
+    min_wall_len = 0.30
+    before_cull = len(unique_walls)
+    unique_walls = [w for w in unique_walls
+                    if np.linalg.norm(np.array(w["end"]) - np.array(w["start"])) >= min_wall_len]
+    if len(unique_walls) < before_cull:
+        logger.info("Removed %d degenerate walls (< %.2fm)",
+                    before_cull - len(unique_walls), min_wall_len)
 
     all_heights = sorted([w["height"] for w in unique_walls])
     if all_heights:
@@ -1276,9 +1288,7 @@ def build_building_json(
 
     for i, w in enumerate(unique_walls):
         wall_id = f"W{i + 1}"
-        thickness = w["thickness"]
-        if thickness < 0.05:
-            thickness = ifc_cfg.default_thickness
+        thickness = ifc_cfg.default_thickness
 
         data["walls"].append({
             "id": wall_id, "storey": storey_id,
