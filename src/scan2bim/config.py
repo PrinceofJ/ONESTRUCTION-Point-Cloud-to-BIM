@@ -131,10 +131,11 @@ class WallProcConfig:
 
     # door heuristics (metres)
     door_min_width_m: float = 0.50
-    door_max_width_m: float = 1.60
-    door_min_height_m: float = 1.50
+    door_max_width_m: float = 1.80
+    door_min_height_m: float = 1.80
     door_max_height_m: float = 2.80
     door_floor_margin_px: int = 3
+    door_max_wall_width_frac: float = 0.85
 
     # window heuristics (metres)
     window_min_width_m: float = 0.30
