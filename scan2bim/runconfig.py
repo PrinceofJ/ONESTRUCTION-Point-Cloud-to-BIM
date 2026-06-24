@@ -112,7 +112,12 @@ def assert_upstream_config(cfg, upstream_cfg_dict, fields=GEOMETRY_FIELDS):
         have = getattr(cfg, f)
         want = upstream_cfg_dict[f]
         if f == 'file_path':
-            if os.path.basename(str(have)) == os.path.basename(str(want)):
+            # Compare by basename, tolerant of mixed path separators: a config.json written on
+            # Windows ('c:\\...\\area1.xyz') is often validated on Linux/Colab, where
+            # os.path.basename does NOT split on '\\'. Normalise both to '/' first so the
+            # basename is extracted correctly on either platform.
+            if (os.path.basename(str(have).replace('\\', '/')) ==
+                    os.path.basename(str(want).replace('\\', '/'))):
                 continue
         elif isinstance(have, (int, float)) and isinstance(want, (int, float)) \
                 and not isinstance(have, bool):
