@@ -8,11 +8,40 @@
 #
 # Sections (input:, output:, raster: …) are only for readability; the loader matches
 # each key to a Config field by name.
+#
+# ----------------------------------------------------------------------------
+# THE PROCESS (research-fixes Task 01): scan in -> GT in -> segment -> compare -> evaluate
+# ----------------------------------------------------------------------------
+# The pipeline is dataset-agnostic. You set TWO inputs here, and they must be a matched pair:
+#
+#   1. input.file_path  — the real-life scan to SEGMENT. Must be a FULL cloud (interior points
+#                         present) so the watershed's void-rejection + coverage gating behave.
+#                         Notebook 1 rasterizes it and writes the Stage-1 transform.json (the
+#                         single coordinate contract for every later stage).
+#
+#   2. groundtruth.gt_dir — the GROUND-TRUTH model to compare against: a directory of per-room
+#                         point files <room>/<room>.txt. gt_raster.ipynb rasterizes these onto
+#                         the Stage-1 grid (gt_room_labels.npy); pq_eval scores each method's
+#                         labels against it.
+#
+# The scan and the GT are sourced independently, so the run is only valid if they share the
+# SAME world XY frame + units. gt_raster.ipynb enforces this: it back-projects the GT room
+# points through the scan's Stage-1 transform and HARD-FAILS if under 98% land in-grid. A
+# mismatched pair fails loudly here instead of producing meaningless metrics. (For the bundled
+# data, data/area1.xyz pairs with data/Area_1 — verified ~100% in-grid; data/Area_3 lands only
+# ~44%, which the gate rejects.) Swap both to any other matched scan+GT pair to run a new scene.
+#
+# Avoid a structural-only cloud as the scan (e.g. data/area3_structural.ply — wall/column/beam/
+# door/window annotations only, no interior points): the watershed loses every room to
+# void-rejection unless min_coverage_frac is 0. Notebook 1 warns when it detects this.
 # ============================================================================
 
 input:
-  file_path: data/area1.xyz             # S3DIS Area 3 FULL (non-segmented) original capture
+  file_path: data/area3.xyz      # the real-life scan to SEGMENT (full cloud); pairs with gt_dir below
   units_per_meter: 1.0           # raw units per metre (1.0 if already in metres)
+
+groundtruth:
+  gt_dir: data/Area_3            # ground-truth model dir (per-room <room>/<room>.txt); same frame as the scan
 
 output:
   out_root: scan2bim_out         # all stage folders + ZIPs land here
@@ -21,10 +50,10 @@ raster:
   pixel_m: 0.03                  # raster resolution (metres / pixel) — the memory dial
 
 watershed:
-  min_coverage_frac: 0.25        # default void-rejection: area3.xyz is a FULL cloud with
-                                 # points inside room interiors, so coverage is meaningful
-                                 # again. (Use 0.0 for a structural-only cloud, which has no
-                                 # interior points and would otherwise lose every room.)
+  min_coverage_frac: 0.25        # default void-rejection: the canonical scan is a FULL cloud
+                                 # with points inside room interiors, so coverage is meaningful.
+                                 # (Use 0.0 for a structural-only cloud, which has no interior
+                                 # points and would otherwise lose every room — see header note.)
 
 slab:
   slab_lo_m: 0.1                 # shallower wall-height band edge (closer to ceiling)

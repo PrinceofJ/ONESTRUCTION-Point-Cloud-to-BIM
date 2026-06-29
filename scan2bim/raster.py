@@ -115,3 +115,47 @@ def label_points(points, labels, transform):
     out = np.full(len(row), -2, np.int32)
     out[inb] = labels[row[inb], col[inb]]
     return out
+
+
+# ---------------------------------------------------------------------------
+# coordinate-integrity helpers (research-fixes Task 01)
+# ---------------------------------------------------------------------------
+def grid_world_bbox(transform):
+    """World-space (axis-a, axis-b) bounding box the raster grid covers under ``transform``.
+
+    Returns ``(a_min, b_min, a_max, b_max)`` in the same world units as the cloud. Used to
+    eyeball whether a GT point set lands inside the Stage-1 grid before trusting any
+    downstream metric (the §01 frame-alignment gate)."""
+    ps = transform['pixel_size']
+    a_min = transform['a_min']
+    b_min = transform['b_min']
+    return (float(a_min), float(b_min),
+            float(a_min + transform['width'] * ps),
+            float(b_min + transform['height'] * ps))
+
+
+def interior_coverage_fraction(coverage, wall_mask, close_px=0):
+    """Fraction of the building's *interior* footprint that the scan actually covers.
+
+    Discriminates a FULL cloud (interior points present → high fraction) from a
+    structural-only cloud (only walls/columns scanned → near-zero fraction, because the
+    interior holds no points). The building footprint is the wall outline closed and
+    hole-filled; the interior is that footprint minus the wall pixels themselves; the
+    fraction is the share of interior cells that ``coverage`` marks as scanned.
+
+    Both inputs are bool rasters on the Stage-1 grid (``coverage`` from
+    ``rasterize_coverage``, ``wall_mask`` the occupancy wall pixels). ``close_px`` optionally
+    closes the wall mask first so a doorway gap does not leak the fill to the exterior.
+    Returns ``0.0`` if the footprint has no interior."""
+    from scipy import ndimage
+    wall = np.asarray(wall_mask, bool)
+    if close_px and close_px > 0:
+        ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * close_px + 1, 2 * close_px + 1))
+        wall = cv2.morphologyEx(wall.astype(np.uint8), cv2.MORPH_CLOSE, ker).astype(bool)
+    footprint = ndimage.binary_fill_holes(wall)
+    interior = footprint & ~wall
+    n_interior = int(interior.sum())
+    if n_interior == 0:
+        return 0.0
+    covered_interior = int((interior & np.asarray(coverage, bool)).sum())
+    return covered_interior / n_interior

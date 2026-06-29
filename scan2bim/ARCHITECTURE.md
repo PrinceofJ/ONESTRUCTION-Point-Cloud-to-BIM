@@ -34,6 +34,39 @@ deep they sit under `notebooks/`.
 
 ---
 
+## Inputs & coordinate-frame integrity (scan + GT must share a frame)
+
+The process is **scan in → GT in → segment → compare → evaluate**, and is dataset-agnostic.
+Two **independently sourced** inputs are set in `params.yaml` and must be a matched pair:
+
+- **The scan** — `input.file_path`, the real-life cloud the three methods *segment*. It must
+  be a **full** cloud (interior points present) so the watershed's void-rejection and coverage
+  gating behave — **not** a structural-only cloud such as `data/area3_structural.ply`
+  (wall/column/beam/door/window annotations only), on which the watershed loses every room to
+  void-rejection unless `min_coverage_frac == 0`. Stage 1 rasterizes the scan and writes the
+  `transform.json` that is the single coordinate contract for every later stage.
+- **The ground-truth model** — `groundtruth.gt_dir`, a directory of per-room point files
+  `<room>/<room>.txt` (wall accuracy additionally uses `Annotations/wall_N.txt`).
+  `evaluation/gt_raster.ipynb` rasterizes these onto the Stage-1 grid to build
+  `gt_room_labels.npy`; `pq_eval` scores each method's labels against it. The GT does **not**
+  come from the scan.
+
+Because the two are sourced separately, nothing structurally guarantees they share an XY frame
++ units. `gt_raster.ipynb` enforces it: it back-projects the GT room points through the scan's
+Stage-1 transform and **hard-fails if under 98 %** land in-grid, printing the in-bounds fraction
+and the GT-vs-grid bounding boxes (`scan2bim.grid_world_bbox`). The QA overlay (GT vs. watershed
+rooms) is a required visual gate before any `pq_eval` number is trusted. Notebook 1 additionally
+warns, via `scan2bim.interior_coverage_fraction`, if a structural-only cloud is loaded while
+`min_coverage_frac > 0`. This frame guarantee also covers the wall GT (`wall_N.txt`), which lives
+in the same Area frame as the room files.
+
+For the bundled data, the scan `data/area1.xyz` pairs with `data/gt_dir = data/Area_1` (~100 %
+in-grid). `data/Area_3` is a **different** scene/frame (~44 % in-grid) and the gate rejects it —
+the kind of silent scan/GT mismatch this check exists to catch. Swap both `file_path` and
+`gt_dir` to any other matched pair to run a new scene.
+
+---
+
 ## Execution order — shared preprocessing, then one method
 
 The wall-assignment algorithm's **first step is "obtain room mask `M_i`"**, and room masks

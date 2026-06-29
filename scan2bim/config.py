@@ -18,7 +18,14 @@ from dataclasses import dataclass, asdict
 @dataclass
 class Config:
     # ---- input ----
-    file_path: str = 'data/area1.xyz'      # canonical sample cloud; relative to project root, resolved by load_config()
+    # The pipeline is dataset-agnostic: point `file_path` at the real-life scan to segment and
+    # `gt_dir` at the matching ground-truth model. BOTH are config inputs (no hardcoded paths),
+    # both relative to the project root and resolved to absolute by load_config(). They must
+    # share the same world XY frame + units; gt_raster.ipynb asserts this before scoring (a
+    # mismatched pair — e.g. the area1.xyz scan with the wrong area's GT — back-projects to a
+    # low in-grid fraction and hard-fails). area1.xyz pairs with data/Area_1 (verified ~100%).
+    file_path: str = 'data/area1.xyz'      # the real-life scan to segment (must be a FULL cloud — interior points present)
+    gt_dir: str = 'data/Area_1'            # ground-truth model: a dir of per-room point files <room>/<room>.txt
     units_per_meter: float = 1.0
     up_axis: int = 2                       # 0=X 1=Y 2=Z
 

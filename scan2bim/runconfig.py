@@ -73,7 +73,8 @@ def load_config(params='params.yaml', start=None, **overrides) -> Config:
 
     Steps: find the project root; read ``params.yaml`` (relative to that root) and apply its
     values over ``Config()``; apply any keyword ``overrides`` (these win, for notebook-local
-    tweaks); resolve ``file_path`` **and** ``out_root`` to absolute paths under the root.
+    tweaks); resolve ``file_path``, ``gt_dir`` **and** ``out_root`` to absolute paths under
+    the root.
     A missing ``params.yaml`` is tolerated (pure defaults) so a half-set-up clone still runs.
     """
     root = project_root(start)
@@ -90,6 +91,7 @@ def load_config(params='params.yaml', start=None, **overrides) -> Config:
 
     cfg = Config(**merged)
     cfg.file_path = _resolve(root, cfg.file_path)
+    cfg.gt_dir = _resolve(root, cfg.gt_dir)
     cfg.out_root = _resolve(root, cfg.out_root)
     return cfg
 
