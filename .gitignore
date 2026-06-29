@@ -40,3 +40,5 @@ scan2bim_out/
 # don't commit large clouds; keep the placeholder readme
 data/*
 !data/README.md
+
+Claude Prompts Markdowns/
