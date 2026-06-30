@@ -99,8 +99,8 @@ ifc_export:
   min_wall_fill_ratio: 0.15
   default_thickness: 0.15
   exterior_thickness: 0.30
-  max_merge_thickness: 0.45
-  dedup_offset_tol: 0.45
+  max_merge_thickness: 0.25
+  dedup_offset_tol: 0.10
   dedup_overlap_frac: 0.10
   snap_tolerance_m: 0.15
   project_name: Scanned Building
