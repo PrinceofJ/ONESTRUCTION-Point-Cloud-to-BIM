@@ -20,21 +20,39 @@ logger = logging.getLogger(__name__)
 # Step 1: Find candidate voids via connected components
 # ---------------------------------------------------------------------------
 
-def find_void_components(wall_img, min_void_px=15):
+def find_void_components(wall_img, min_void_px=15, void_open_px=3):
     void_mask = (wall_img == 255).astype(np.uint8)
-    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(void_mask, connectivity=8)
+
+    if void_open_px > 0:
+        k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (2 * void_open_px + 1, 2 * void_open_px + 1),
+        )
+        eroded = cv2.morphologyEx(void_mask, cv2.MORPH_OPEN, k)
+        n_labels, seed_labels, stats, centroids = cv2.connectedComponentsWithStats(
+            eroded, connectivity=8,
+        )
+        labels = np.zeros_like(seed_labels)
+        for i in range(1, n_labels):
+            seed = (seed_labels == i).astype(np.uint8)
+            grown = cv2.dilate(seed, k, iterations=2)
+            labels[(grown > 0) & (void_mask > 0) & (labels == 0)] = i
+    else:
+        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            void_mask, connectivity=8,
+        )
 
     components = []
     for i in range(1, n_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
+        mask = labels == i
+        area = int(mask.sum())
         if area < min_void_px:
             continue
-        mask = labels == i
-        x = stats[i, cv2.CC_STAT_LEFT]
-        y = stats[i, cv2.CC_STAT_TOP]
-        w = stats[i, cv2.CC_STAT_WIDTH]
-        h = stats[i, cv2.CC_STAT_HEIGHT]
-        cx, cy = centroids[i]
+        ys, xs = np.where(mask)
+        x, y = int(xs.min()), int(ys.min())
+        w = int(xs.max() - x + 1)
+        h = int(ys.max() - y + 1)
+        cx, cy = float(xs.mean()), float(ys.mean())
         components.append({
             "mask": mask, "area": area,
             "bbox": (x, y, w, h), "centroid": (cx, cy),
@@ -220,13 +238,12 @@ def classify_openings(merged_openings, img_height, cfg: WallProcConfig):
 # Full pipeline for one wall image
 # ---------------------------------------------------------------------------
 
-def process_wall_image(img_path, predictor, cfg: WallProcConfig):
-    """Process a single wall image end-to-end.
+def process_wall_array(wall_img, predictor, cfg: WallProcConfig):
+    """Process a wall image array end-to-end (no file I/O).
 
     Returns (openings_list, wall_img_array).
     If predictor is None, SAM refinement is skipped.
     """
-    wall_img = np.array(Image.open(img_path).convert("L"))
     img_h, img_w = wall_img.shape
 
     components = find_void_components(wall_img, min_void_px=cfg.min_void_px)
@@ -262,6 +279,12 @@ def process_wall_image(img_path, predictor, cfg: WallProcConfig):
     merged = merge_fragments(refined, merge_margin_px=cfg.door_floor_margin_px)
     openings = classify_openings(merged, img_h, cfg)
     return openings, wall_img
+
+
+def process_wall_image(img_path, predictor, cfg: WallProcConfig):
+    """Process a single wall image file. Delegates to process_wall_array."""
+    wall_img = np.array(Image.open(img_path).convert("L"))
+    return process_wall_array(wall_img, predictor, cfg)
 
 
 # ---------------------------------------------------------------------------

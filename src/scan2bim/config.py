@@ -131,10 +131,11 @@ class WallProcConfig:
 
     # door heuristics (metres)
     door_min_width_m: float = 0.50
-    door_max_width_m: float = 1.60
-    door_min_height_m: float = 1.50
+    door_max_width_m: float = 1.80
+    door_min_height_m: float = 1.80
     door_max_height_m: float = 2.80
     door_floor_margin_px: int = 3
+    door_max_wall_width_frac: float = 0.85
 
     # window heuristics (metres)
     window_min_width_m: float = 0.30
@@ -159,12 +160,13 @@ class IfcExportConfig:
     # merge / dedup
     default_thickness: float = 0.15
     exterior_thickness: float = 0.30
-    max_merge_thickness: float = 0.35
-    dedup_offset_tol: float = 0.15
+    max_merge_thickness: float = 0.45
+    dedup_offset_tol: float = 0.45
     dedup_overlap_frac: float = 0.10
 
     # endpoint snapping
     snap_tolerance_m: float = 0.15
+    corner_tolerance_m: float = 0.50
 
     # IFC output
     project_name: str = "Scanned Building"
