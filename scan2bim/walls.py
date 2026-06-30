@@ -1,19 +1,4 @@
-"""Wall handling.
-
-Three groups of functions:
-
-1. **Wall-mask cleanup / sealing / footprint** (sections 5 of the original) — ported
-   verbatim. Used by the watershed stage.
-2. **Legacy raster-overlap wall assignment** (``room_footprints`` /
-   ``split_rooms_to_clouds`` from section 9) — kept for reference and for the legacy
-   debug overlay. **No longer used for export** (see #3). The back-projection core is
-   factored out into ``backproject_room_masks`` so it is shared, not duplicated.
-3. **NEW boundary-ring wall assignment** (``room_wall_masks_boundary_ring``) — the
-   replacement requested in the refactor. For each room it builds a boundary ring
-   ``B_i = M_i \\ erode(M_i)``, dilates it by ``r_w``, and keeps the **wallness** pixels
-   that fall inside. ``estimate_wall_thickness_px`` is the *existing* distance-transform
-   heuristic (originally inlined in ``room_footprints``) reused to auto-size the radii.
-"""
+"""Wall mask cleanup, sealing, and boundary-ring wall assignment."""
 
 from __future__ import annotations
 
@@ -26,9 +11,7 @@ from skimage.morphology import skeletonize
 from .raster import point_cells
 
 
-# ===========================================================================
 # 1 · wall-mask cleanup / sealing / footprint  (verbatim from the original)
-# ===========================================================================
 def _fill_holes(mask_bool):
     m = mask_bool.astype(np.uint8); h, w = m.shape
     ff = m.copy(); flood = np.zeros((h + 2, w + 2), np.uint8)
@@ -37,8 +20,7 @@ def _fill_holes(mask_bool):
 
 
 def _building_footprint(walls, close_px):
-    """Filled OUTER CONTOUR of the walls = building footprint. Leak-immune: a gap in
-    an outer wall does not re-open the interior the way fill-holes-after-close does."""
+    """Filled outer contour of walls = building footprint."""
     w = walls.astype(np.uint8)
     ker = None
     if close_px > 0:
@@ -60,8 +42,7 @@ def _interior_seed(mask_bool):
 
 
 def clean_wall_mask(wall_mask, min_wall_area=60, seal_gap=0):
-    """Drop tiny black components (noise). seal_gap kept for API compatibility but
-    defaults to 0 — prefer seal_at_doors()."""
+    """Drop small wall components below min_wall_area."""
     wm = (np.asarray(wall_mask) > 0).astype(np.uint8)
     n, lbl, stats, _ = cv2.connectedComponentsWithStats(wm, connectivity=8)
     keep = np.zeros_like(wm)
@@ -75,8 +56,7 @@ def clean_wall_mask(wall_mask, min_wall_area=60, seal_gap=0):
 
 
 def seal_at_doors(wall_mask, doors_px, thickness=None):
-    """Place wall barriers ONLY at detected doors. doors_px: list of (x0,y0,x1,y1) line
-    segments (image px) spanning each door opening."""
+    """Place wall barriers at detected door openings."""
     wm = (np.asarray(wall_mask) > 0).astype(np.uint8)
     if thickness is None:
         dist = cv2.distanceTransform(wm, cv2.DIST_L2, 5)
@@ -127,13 +107,8 @@ def bridge_wall_endpoints(wall_mask, max_gap=12, max_angle_deg=45, thickness=Non
     return out.astype(bool)
 
 
-# ===========================================================================
-# 2 · LEGACY raster-overlap wall assignment  (kept for reference / debug only)
-# ===========================================================================
 def room_footprints(labels, margin=1, thickness=None, walls_only=False):
-    """Original behaviour: dilate each room interior and intersect with the occupancy
-    wall pixels (labels == -1). Superseded for export by the boundary-ring method but
-    retained because the legacy debug overlay visualises it."""
+    """Legacy raster-overlap wall assignment."""
     wall_mask = (labels == -1)
     if thickness is None:
         thickness = estimate_wall_thickness_px(wall_mask)
@@ -152,22 +127,13 @@ def room_footprints(labels, margin=1, thickness=None, walls_only=False):
 
 def split_rooms_to_clouds(points, labels, transform, colors=None,
                           margin=1, thickness=None, walls_only=False, keep_mask=None):
-    """LEGACY export path. Builds legacy footprints then back-projects (shared core)."""
+    """Legacy export path via room_footprints + back-projection."""
     foot = room_footprints(labels, margin=margin, thickness=thickness, walls_only=walls_only)
     return backproject_room_masks(points, foot, transform, colors=colors, keep_mask=keep_mask)
 
 
-# ===========================================================================
-# 3 · NEW boundary-ring wall assignment  (the refactor's one behavioural change)
-# ===========================================================================
 def estimate_wall_thickness_px(wall_mask):
-    """Median wall thickness in pixels, via the distance transform.
-
-    This is the *existing* heuristic that the original ``room_footprints`` /
-    ``seal_at_doors`` used inline (``2 * median(distance-transform over wall pixels)``).
-    Factored out here so the new boundary-ring method can reuse it to auto-size its
-    erosion / dilation radii when the corresponding config values are left as ``None``.
-    """
+    """Median wall thickness in pixels via distance transform."""
     wm = (np.asarray(wall_mask) > 0).astype(np.uint8)
     dist = cv2.distanceTransform(wm, cv2.DIST_L2, 5)
     pos = dist[dist > 0]
@@ -175,13 +141,7 @@ def estimate_wall_thickness_px(wall_mask):
 
 
 def resolve_ring_radii_px(cfg, wall_mask_for_thickness):
-    """Resolve (erode_px, dilate_px) for the boundary-ring method.
-
-    Honours ``cfg.room_erode_m`` and ``cfg.wall_dilate_m`` when set; if either is
-    ``None`` it is auto-derived from the estimated wall thickness (the existing
-    heuristic): erosion -> half a wall thickness, dilation r_w -> one wall thickness
-    plus the export buffer ``do_buffer_px``. Returns ints >= 1.
-    """
+    """Resolve (erode_px, dilate_px) from config or wall thickness heuristic."""
     t = estimate_wall_thickness_px(wall_mask_for_thickness)
     if getattr(cfg, 'room_erode_m', None) is not None:
         erode_px = int(round(cfg.room_erode_m / cfg.pixel_m))
@@ -196,18 +156,7 @@ def resolve_ring_radii_px(cfg, wall_mask_for_thickness):
 
 def room_wall_masks_boundary_ring(labels, wallness, cfg,
                                   erode_px=None, dilate_px=None, return_debug=False):
-    """NEW per-room wall-pixel assignment.
-
-    For every room id (>= 1) in ``labels``:
-        1. M_i  = (labels == i)                      # room mask
-        2. I_i  = erode(M_i, erode_px)               # reliable interior
-        3. B_i  = M_i \\ I_i                          # boundary ring
-        4. B_i' = dilate(B_i, dilate_px)             # reach out by r_w
-        5. W_i  = B_i' & wallness                    # keep wallness pixels on the ring
-
-    Returns ``{room_id: bool wall-pixel mask}`` ready for back-projection. The wallness
-    raster (preserved unchanged from ``rasterize_wallness``) is the wall source, per spec.
-    """
+    """Per-room wall assignment via boundary-ring dilation."""
     wallness = np.asarray(wallness, bool)
     re, rd = resolve_ring_radii_px(cfg, wallness)
     erode_px = re if erode_px is None else int(erode_px)
@@ -232,16 +181,8 @@ def room_wall_masks_boundary_ring(labels, wallness, cfg,
     return out
 
 
-# ===========================================================================
-# shared back-projection core (used by both export paths)
-# ===========================================================================
 def backproject_room_masks(points, room_masks, transform, colors=None, keep_mask=None):
-    """Back-project 3-D points into per-room buckets given image-space room/wall masks.
-
-    ``room_masks``: {room_id: bool HxW mask}. ``keep_mask``: optional per-point bool mask
-    (e.g. the floor<->ceiling height band) applied on top of the spatial selection.
-    Returns a list of dicts ``{room_id, mask (per-point bool), points[, colors]}``.
-    """
+    """Back-project 3D points into per-room buckets via image-space masks."""
     row, col, inb = point_cells(points, transform)
     pts = np.asarray(points); cols = np.asarray(colors) if colors is not None else None
     keep = None if keep_mask is None else np.asarray(keep_mask, bool)
@@ -260,8 +201,7 @@ def backproject_room_masks(points, room_masks, transform, colors=None, keep_mask
 
 
 def height_band_mask(points, cfg, transform, floor_z=None, ceil_z=None):
-    """Per-point bool: floor + wall_floor_margin <= z <= ceil - wall_ceiling_margin.
-    Mirrors the export band in the original section 11.6."""
+    """Per-point bool mask for the wall height band."""
     from .slab import estimate_ceiling
     pts = np.asarray(points, np.float64)
     z = pts[:, transform['up_axis']]
@@ -273,7 +213,7 @@ def height_band_mask(points, cfg, transform, floor_z=None, ceil_z=None):
 
 def fit_walls_in_room(pc, up_axis=2, normal_tol_deg=10, dist_thresh=0.02,
                       min_inliers=400, max_planes=20, dbscan_eps_mult=8):
-    """RANSAC vertical-plane fit per room (verbatim). ``pc`` is an open3d PointCloud."""
+    """RANSAC vertical-plane fit per room."""
     if len(pc.points) < min_inliers:
         return []
     pc.estimate_normals()

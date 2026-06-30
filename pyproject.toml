@@ -1,11 +1,10 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "scan2bim"
-version = "0.1.0"
+version = "1.0.0"
 description = "End-to-end pipeline converting 3D LiDAR scans into IFC4 BIM models"
 requires-python = ">=3.10"
 license = "MIT"
@@ -23,9 +22,8 @@ dependencies = [
     "scipy>=1.11",
     "scikit-image>=0.21",
     "Pillow>=10.0",
-    "supervision>=0.16",
-    "click>=8.1",
     "pyyaml>=6.0",
+    "matplotlib>=3.7",
 ]
 
 [project.optional-dependencies]
@@ -37,42 +35,10 @@ sam = [
 ifc = [
     "ifcopenshell",
 ]
-viz = [
-    "matplotlib>=3.7",
-]
 dev = [
     "pytest>=7.0",
-    "scan2bim[sam,ifc,viz]",
+    "scan2bim[sam,ifc]",
 ]
-
-[project.scripts]
-scan2bim = "scan2bim.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-version = "1.0.0"
-description = "Scan-to-BIM room segmentation (occupancy -> watershed -> wall assignment -> SAM refinement)."
-requires-python = ">=3.9"
-dependencies = [
-    "numpy",
-    "scipy",
-    "scikit-image",
-    "opencv-python-headless",
-    "pillow",
-    "matplotlib",
-    "open3d",
-    "pyyaml",
-]
-
-[project.optional-dependencies]
-# 'sv'  : the supervision-based overlays (not used by the notebooks themselves)
-sv  = ["supervision"]
-# 'sam' : the Notebook-4 SAM refinement (GPU / Colab). SAM 2 itself is installed separately
-#   (verified against github.com/facebookresearch/sam2):
-#   pip install "git+https://github.com/facebookresearch/sam2.git"
-sam = ["torch>=2.5.1", "torchvision>=0.20.1"]
-# 'dev' : test tooling
-dev = ["pytest"]
 
 [tool.setuptools]
 packages = ["scan2bim"]

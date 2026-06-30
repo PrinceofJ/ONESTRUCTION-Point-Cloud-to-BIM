@@ -1,7 +1,7 @@
 """Unit tests for the pure-SAM automatic room segmentation (``scan2bim.sam_auto``).
 
 Mirrors ``test_sam_refine.py``: tiny HAND-BUILT boolean masks + a FAKE automatic mask
-generator — no pipeline data, no torch, no checkpoint, no randomness. They exercise the
+generator  - no pipeline data, no torch, no checkpoint, no randomness. They exercise the
 model-free deterministic core (``masks_to_room_labels`` / ``classify_rooms_by_area`` /
 ``buffer_room_labels`` / ``reprocess_residual``) plus the no-model pass-through of the
 orchestrator (``segment_rooms_sam_auto``).

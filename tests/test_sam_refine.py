@@ -1,6 +1,6 @@
 """Unit tests for the prompted-SAM graph relabel (``scan2bim.sam_refine``).
 
-All fixtures are tiny HAND-BUILT label arrays + hand-built boolean "SAM masks" — no
+All fixtures are tiny HAND-BUILT label arrays + hand-built boolean "SAM masks"  - no
 pipeline data, no model, no randomness. They exercise the model-free core
 (``relabel_by_sam``) plus the no-model pass-through of the orchestrator.
 
@@ -9,7 +9,7 @@ Scenarios (from the brief):
   * a confident SAM split of a wrongly-merged room SPLITS it;
   * a boundary on wall pixels is NEVER overridden;
   * refined output never contains a room pixel on a wall;
-  * a low-confidence mask is ignored (the watershed result survives) — safety rail.
+  * a low-confidence mask is ignored (the watershed result survives)  - safety rail.
 """
 
 import numpy as np
@@ -103,7 +103,7 @@ def test_boundary_on_wall_is_never_overridden():
     span = free.copy()                                  # confident mask spanning the wall
     out, dbg = relabel_by_sam(labels, walls, _dt(walls),
                               {1: span, 2: span}, {1: 0.95, 2: 0.95}, _cfg())
-    assert _n_rooms(out) == 2                            # NOT merged — the edge is wall-backed
+    assert _n_rooms(out) == 2                            # NOT merged  - the edge is wall-backed
     assert dbg['merges'] == []
     assert (out[walls] == -1).all()                     # the dividing wall stays -1
 

@@ -1,31 +1,11 @@
-"""scan2bim — shared library for the Scan-to-BIM room-segmentation pipeline.
-
-The four notebooks are thin drivers; all reusable logic lives here so nothing is
-duplicated across stages. Heavy / optional dependencies (open3d, supervision, torch +
-the SAM backends) are imported lazily inside the functions that need them, so importing
-``scan2bim`` and running the raster / watershed / wall-assignment stages does not require
-them to be installed.
-
-Stage modules
--------------
-config       : Config dataclass (single source of truth)
-io_utils     : load_point_cloud
-slab         : ceiling estimation + vertical slab crop
-raster       : occupancy / wallness / coverage rasters + pixel<->world transforms
-watershed    : Pass-1 deterministic watershed segmentation
-walls        : wall-mask cleanup + NEW boundary-ring wall assignment + back-projection
-sam_refine   : model-agnostic PROMPTED SAM refinement (graph relabel: merge / split)
-sam_auto     : pure-SAM AUTOMATIC room segmentation (Method 2; segment-everything)
-viz          : optional debug/QA plots
-artifacts    : structured save/load + ZIP packaging + shared filename constants
-"""
+"""scan2bim - shared library for the Scan-to-BIM pipeline."""
 
 from . import config, io_utils, slab, raster, watershed, walls, sam_refine, sam_auto, viz, artifacts
+from . import wall_seg, wall_proc, ifc_export
 from . import runconfig
 from . import eval
 from .config import Config
 
-# convenience re-exports (most-used names)
 from .runconfig import (project_root, load_config,
                         assert_upstream_config, assert_points_in_grid)
 from .io_utils import load_point_cloud
@@ -46,10 +26,17 @@ from .sam_auto import (AutoMaskGenerator, build_auto_mask_generator,
 from .eval import (STRUCTURAL_CLUTTER_CLASSES, annotation_class,
                    load_room_interior_points, build_gt_room_labels,
                    overlap_stats, score_rooms, load_method_labels)
+from .wall_seg import (segment_walls, flatten_wall, save_wall_images,
+                       run_wall_segmentation)
+from .wall_proc import (find_void_components, merge_fragments, classify_openings,
+                        process_wall_array, process_wall_image,
+                        run_wall_image_processing)
+from .ifc_export import (build_building_json, build_ifc, compute_wall_geometry,
+                         compute_room_boundaries)
 
 __all__ = [
     'config', 'io_utils', 'slab', 'raster', 'watershed', 'walls', 'sam_refine', 'sam_auto',
-    'viz', 'artifacts', 'runconfig', 'eval', 'Config',
+    'viz', 'artifacts', 'runconfig', 'eval', 'wall_seg', 'wall_proc', 'ifc_export', 'Config',
     'project_root', 'load_config', 'assert_upstream_config', 'assert_points_in_grid',
     'load_point_cloud', 'estimate_ceiling', 'estimate_local_ceilings', 'crop_vertical',
     'rasterize_topdown', 'rasterize_wallness', 'rasterize_coverage', 'point_cells',
@@ -65,6 +52,10 @@ __all__ = [
     'reprocess_residual',
     'STRUCTURAL_CLUTTER_CLASSES', 'annotation_class', 'load_room_interior_points',
     'build_gt_room_labels', 'overlap_stats', 'score_rooms', 'load_method_labels',
+    'segment_walls', 'flatten_wall', 'save_wall_images', 'run_wall_segmentation',
+    'find_void_components', 'merge_fragments', 'classify_openings',
+    'process_wall_array', 'process_wall_image', 'run_wall_image_processing',
+    'build_building_json', 'build_ifc', 'compute_wall_geometry', 'compute_room_boundaries',
 ]
 
 __version__ = '1.0.0'
