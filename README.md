@@ -1,237 +1,183 @@
-# ONESTRUCTION  - Point Cloud to BIM
+# ONESTRUCTION — Point Cloud to BIM
 
-An end-to-end pipeline that converts a 3D LiDAR scan of a building into an IFC4 BIM model.
-Rather than attempting segmentation directly in 3D, the pipeline **flattens the scan into 2D
-images**, uses classical CV and SAM (Segment Anything Model) for segmentation, then projects
-results back into 3D.
+Converts a 3D LiDAR scan of a building into an IFC4 BIM model. Instead of segmenting
+directly in 3D, the pipeline flattens the scan into 2D images, segments rooms and walls
+with classical CV and SAM, then projects results back into 3D.
 
 **Authors:** Jackson Matsumura, Ian Mendoza, Finn Wood, Marvin Recio
 
-The pipeline runs **locally in VS Code** (see [Local (VS Code) pipeline](#local-vs-code-pipeline)): three room-segmentation methods
-(geometric / SAM / geometric+SAM) run on your machine against a local `data/` folder, and
-only the SAM stage needs a GPU (run that step in Colab). The core idea throughout: rasterize
-the scan top-down, watershed it into rooms, refine with SAM, then fit walls.
-
 ---
 
-## Pipeline Overview
+## How it works
 
 ```
  .ply / .xyz point cloud
-       │
-       ▼
- ┌─────────────────────┐
- │  Room segmentation   │  Watershed + SAM → room labels
- │                      │  Exports per-room wall point clouds
- └─────────┬───────────┘
-           │  room_XX_walls.ply
-           ▼
- ┌─────────────────────┐
- │  Wall segmentation   │  RANSAC wall fitting → 2D wall images
- │                      │  Black = wall, white = void
- └─────────┬───────────┘
-           │  wall_XX.png + metadata
-           ▼
- ┌─────────────────────┐
- │  Wall image proc.    │  SAM-refined void detection
- │                      │  Door/window classification
- └─────────┬───────────┘
-           │  openings.json
-           ▼
- ┌─────────────────────┐
- │  JSON → IFC4         │  IfcOpenShell translator
- │                      │  Outputs model.ifc
- └─────────────────────┘
+      │
+      ▼
+  Room segmentation    Watershed + SAM → room labels
+                       Exports per-room wall point clouds
+      │  room_XX_walls.ply
+      ▼
+
+  Wall segmentation    RANSAC wall fitting → 2D wall images
+
+      │  wall images + metadata
+      ▼
+ 
+  Wall processing      Door/window classification
+
+      │  openings.json
+      ▼
+
+  IFC4 export          IfcOpenShell → model.ifc
+
 ```
 
 ---
 
-## Local (VS Code) pipeline
+## Setup
 
-The notebooks run on **your machine** against the local `data/` folder and write outputs to the
-local `scan2bim_out/` folder  - no upload/download step. The notebooks are thin drivers; all
-logic lives in the shared `scan2bim/` package.
+Requires **Python 3.11** (Open3D doesn't support 3.12+).
 
-**Three room-segmentation methods, one shared front-end.** Everyone starts with the same
-`preprocessing/notebook_1_occupancy_raster.ipynb` (point cloud → 2-D rasters, `stage1`), then
-picks a method under `notebooks/methods/`:
+```bash
+# create a virtual environment
+python3.11 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
 
-| Method | Folder | How rooms are segmented | GPU? |
-|--------|--------|-------------------------|------|
-| **Geometric** | `methods/geometric/` | deterministic distance-transform watershed | no (CPU) |
-| **SAM** | `methods/SAM/` | SAM automatic "segment everything", no geometric prior | yes (SAM stage in Colab) |
-| **Geometric + SAM** | `methods/geometric_SAM/` | watershed prior, then **prompted** SAM refinement | yes (SAM stage in Colab) |
-
-Each method writes to its **own** stage directories under `scan2bim_out/`, so the three never
-clobber each other and the **same** `evaluation/` notebooks can score them against one ground
-truth. The SAM stage is the only GPU step (run it in Google Colab  - copy `scan2bim/` and the
-`scan2bim_out/` ZIPs to Drive and run there); everything else is CPU.
-
-```
-onestruction/                 ← open THIS folder in VS Code  (File ▸ Open Folder…)
-├── params.yaml               ← ★ the ONLY file you edit (input cloud, output root, params)
-├── pyproject.toml            ← makes `import scan2bim` work everywhere
-├── requirements.txt
-├── scan2bim/                 ← the shared package
-│   ├── runconfig.py          ← load_config() + cross-stage validation (one shared loader)
-│   └── ARCHITECTURE.md       ← design, data flow, behaviour notes
-├── notebooks/                ← thin drivers; "Run All" top-to-bottom (logic lives in scan2bim/)
-│   ├── preprocessing/        ← shared stage 1 (run once, feeds every method)
-│   │   └── notebook_1_occupancy_raster.ipynb            ← point cloud → 2-D rasters
-│   ├── methods/              ← three room-segmentation methods, compared head-to-head
-│   │   ├── geometric/        ← METHOD 1  - watershed only (CPU)
-│   │   │   ├── notebook_1_watershed.ipynb
-│   │   │   └── notebook_2_wall_assignment.ipynb
-│   │   ├── SAM/              ← METHOD 2  - SAM auto-segmentation, no geometric prior  (Colab/GPU)
-│   │   │   ├── notebook_1_sam_auto_segmentation.ipynb
-│   │   │   └── notebook_2_wall_assignment.ipynb
-│   │   └── geometric_SAM/   ← METHOD 3  - watershed prior + prompted-SAM refinement
-│   │       ├── notebook_1_watershed.ipynb               ← own stage dir (no clobber)
-│   │       ├── notebook_2_sam_refinement.ipynb          ← SAM refinement (Colab/GPU)
-│   │       └── notebook_3_wall_assignment.ipynb         ← walls on SAM-refined masks
-│   ├── converters/           ← input data-prep (not part of any method's run order)
-│   │   └── s3dis_loader.ipynb                            ← S3DIS Area_3 → structural .ply
-│   └── evaluation/           ← S3DIS scoring (shared; scores every method vs. one GT)
-│       ├── gt_raster.ipynb                              ← ground-truth room raster
-│       └── pq_eval.ipynb                                ← Panoptic Quality metrics
-├── data/                     ← drop your area1.xyz here (see below)
-└── scan2bim_out/             ← stage outputs + ZIPs appear here automatically
+# install the package
+pip install -e .
 ```
 
-**The workflow is: edit `params.yaml`, then Run All.** No notebook cell is ever edited  -
-`file_path`, `out_root` and every geometry parameter live only in `params.yaml`, and each
-notebook reads them via `scan2bim.load_config()`.
+This registers `scan2bim` so all notebooks can import it. If you skip this step, the
+notebooks will fail with `ModuleNotFoundError`.
 
-### Setup (once)
+Put your point cloud in `data/` (default: `data/area1.xyz`) and point `params.yaml` at it.
+`params.yaml` controls the input path, output directory, and all geometry parameters.
 
-1. **Open the folder** in VS Code (`File ▸ Open Folder…` → `onestruction`). Install the
-   Microsoft **Python** and **Jupyter** extensions if prompted.
-2. **Create and activate a virtual environment**, then install the package editable:
-   ```bash
-   python -m venv .venv
-   # macOS/Linux:
-   source .venv/bin/activate
-   # Windows (PowerShell):
-   .venv\Scripts\Activate.ps1
+---
 
-   pip install -e .
-   ```
-   `pip install -e .` registers `scan2bim`, so `import scan2bim` works from any notebook with
-   no path juggling. (The bootstrap cell still works even if you skip this  - it adds the
-   project root to `sys.path` as a fallback.)
-3. **Select the interpreter:** open a notebook, click the kernel picker (top-right), and choose
-   the `.venv` interpreter.
-4. **Add your data and point `params.yaml` at it:** put your segmented cloud at `data/area1.xyz`
-   (the default), or set `input.file_path` in `params.yaml` to wherever it lives. This is the
-   only place the input path is set.
+## Three methods
 
-### The `data/` folder
+All three methods start from the same preprocessing step, then diverge. Each writes to its
+own output directories so they don't interfere with each other.
 
-Drop your **segmented point cloud** here (walls / windows / doors), named `area1.xyz`.
+**Step 0 (shared):** Run `preprocessing/notebook_1_occupancy_raster.ipynb` first. This
+rasterizes the point cloud into 2D images that every method consumes.
 
-- Default expected path: `data/area1.xyz` (set in `params.yaml` as `input.file_path`). To use a
-  different name or location, edit that one line in `params.yaml`  - never a notebook cell.
-- Same format and units as the original pipeline (`.xyz`, etc.). `input.units_per_meter` in
-  `params.yaml` controls the scale conversion on load.
-- This folder is git-ignored (except its placeholder) so large clouds aren't committed.
+### Geometric (CPU only)
 
-### Run
+Deterministic watershed segmentation — no ML, no GPU.
 
-**1. Preprocess once.** Open `preprocessing/notebook_1_occupancy_raster.ipynb` and **Run All**
-(no cell edits). It writes `stage1_occupancy/`  - the rasters every method consumes.
+1. `methods/geometric/notebook_1_watershed.ipynb`
+2. `methods/geometric/notebook_2_wall_assignment.ipynb`
 
-**2. Pick a method** under `notebooks/methods/` and **Run All** its notebooks in order:
+### SAM (GPU required)
 
-- **Geometric** (`methods/geometric/`, CPU): `notebook_1_watershed` → `notebook_2_wall_assignment`.
-- **Geometric + SAM** (`methods/geometric_SAM/`): `notebook_1_watershed` →
-  `notebook_2_sam_refinement` (Colab/GPU) → `notebook_3_wall_assignment`.
-- **SAM** (`methods/SAM/`): `notebook_1_sam_auto_segmentation` (Colab/GPU) →
-  `notebook_2_wall_assignment`. Pure-SAM needs a real SAM backend  - `notebook_1` fails loudly
-  on no GPU/checkpoint rather than emitting an empty map.
+SAM in "segment everything" mode, no geometric prior. Needs a CUDA GPU — run in Google
+Colab on a T4 if you don't have one locally. Will not run without `torch` and a SAM
+checkpoint.
 
-The watershed is each geometric-flavoured method's first stage because wall assignment needs its
-room masks; see `scan2bim/ARCHITECTURE.md`. Each notebook's last cell prints
-`packaged -> …/<stage>.zip`. Every method writes its **own** stage dirs, so they coexist under
-`scan2bim_out/` (each `<stage>/` also gets a `<stage>.zip` beside it):
+1. `methods/SAM/notebook_1_sam_auto_segmentation.ipynb` — GPU
+2. `methods/SAM/notebook_2_wall_assignment.ipynb`
+
+### Geometric + SAM (hybrid)
+
+Watershed first, then SAM refines the room boundaries. Best of both.
+
+1. `methods/geometric_SAM/notebook_1_watershed.ipynb`
+2. `methods/geometric_SAM/notebook_2_sam_refinement.ipynb` — GPU
+3. `methods/geometric_SAM/notebook_3_wall_assignment.ipynb`
+
+### Postprocessing (shared)
+
+After any method finishes, run these in order:
+
+1. `postprocessing/notebook_1_wall_segmentation.ipynb` — RANSAC wall fitting
+2. `postprocessing/notebook_2_wall_image_processing.ipynb` — door/window detection
+3. `postprocessing/notebook_3_ifc_export.ipynb` — IFC4 output
+
+The first postprocessing notebook defaults to the geometric method's output (`STAGE3`).
+If you ran a different method, change `WALL_STAGE` at the top of notebooks 1 and 3:
+- Geometric: `A.STAGE3`
+- SAM: `A.STAGE_SAM_WALLS`
+- Geometric + SAM: `A.STAGE5`
+
+---
+
+## Stage outputs
+
+Each notebook writes a stage directory (and a `.zip`) under `scan2bim_out/`:
 
 ```
 scan2bim_out/
-├── stage1_occupancy/                 ← shared (preprocessing)
+├── stage1_occupancy/              ← shared preprocessing
 │
-├── stage2_watershed/                 ┐ geometric
-├── stage3_walls/                     ┘   (room_XX_walls.ply, …)
+├── stage2_watershed/              ┐
+├── stage3_walls/                  ┘ geometric
 │
-├── stage_geometric_sam_watershed/    ┐ geometric + SAM
-├── stage4_sam_refined/               │   (SAM refinement  - Colab/GPU)
-├── stage5_walls_sam_refined/         ┘   (walls on SAM-refined masks)
+├── stage_sam_auto/                ┐
+├── stage_sam_walls/               ┘ SAM
 │
-├── stage_sam_auto/                   ┐ SAM  (automatic-mask room labels  - Colab/GPU)
-└── stage_sam_walls/                  ┘       (walls on the SAM auto masks)
+├── stage2_watershed/              ┐
+├── stage4_sam_refined/            │ geometric + SAM
+├── stage5_walls_sam_refined/      ┘
+│
+├── stage_wall_seg/                ┐
+├── stage_wall_proc/               │ postprocessing
+└── stage_ifc/                     ┘
 ```
 
-The geometric + SAM watershed writes `stage_geometric_sam_watershed/` (not `stage2_watershed/`)
-precisely so it never overwrites the pure-geometric run's masks. `notebook_2_sam_refinement`
-fails with a clear message if its upstream masks are missing  - there is no silent fallback.
+---
 
-### S3DIS evaluation (optional, shared across methods)
+## Evaluation (optional)
 
-The `converters/` and `evaluation/` notebooks are **not** part of any method's run order  - they
-score the room segmentation against Stanford 3D Indoor Scenes (S3DIS) Area 3 ground truth, so
-they live in their own folders.
+For scoring against S3DIS ground truth:
 
-- **`converters/s3dis_loader.ipynb`**  - input data prep, run **once**. Walks the raw
-  `data/Area_3/<room>/Annotations/` folders, keeps only structural classes (wall, column, beam,
-  door, window), and writes `data/area3_structural.ply`. Pure data prep  - it doesn't call
-  `load_config()`.
-- **`evaluation/gt_raster.ipynb`**  - projects each room's full S3DIS cloud onto the Stage 1 grid
-  to build the ground-truth room labels (`scan2bim_out/stage_gt/gt_room_labels.npy`).
-- **`evaluation/pq_eval.ipynb`**  - computes **Panoptic Quality** (IoU matrix + greedy match at
-  IoU > 0.5) of **each method's** rooms vs. the same ground truth →
-  `scan2bim_out/stage_gt/pq_results.json`.
+1. Run `converters/s3dis_loader.ipynb` once to prepare the ground truth data
+2. Set `input.file_path: data/area3_structural.ply` in `params.yaml`
+3. Run preprocessing + whichever method(s) you want to score
+4. Run `evaluation/gt_raster.ipynb` → `evaluation/pq_eval.ipynb`
 
-**Run order for evaluation:** run `converters/s3dis_loader.ipynb` once, set
-`input.file_path: data/area3_structural.ply` in `params.yaml`, run `preprocessing/` and whichever
-method(s) you want to score, then `evaluation/gt_raster.ipynb` → `evaluation/pq_eval.ipynb`.
-Because every method writes a `room_labels.npy` on the same Stage-1 grid, one GT raster scores
+All methods write `room_labels.npy` on the same grid, so one ground truth raster scores
 them all.
 
-### Where files go (vs Colab)
+---
 
-- **Inputs:** read directly from `data/` on your disk  - nothing to mount or upload.
-- **Outputs:** written to `scan2bim_out/` on your disk  - open them in the file explorer, no
-  download needed.
-- Paths are anchored to the project root (`scan2bim.project_root()` walks up to find the
-  package), so they resolve no matter how deep the notebook sits  - e.g. when VS Code starts the
-  kernel in `notebooks/methods/geometric/`.
+## GPU / SAM setup
 
-### Optional dependencies
+The geometric method is CPU-only. The SAM stages need PyTorch and a SAM checkpoint:
 
-- The **geometric** method (preprocessing + `methods/geometric/`) is **CPU-only** and needs just
-  the core deps above.
-- The **SAM stages** are the GPU steps, meant for Google Colab: `methods/geometric_SAM/notebook_2_sam_refinement.ipynb`
-  (and the `methods/SAM/` notebooks once implemented). They run SAM 2 (verified against
-  `github.com/facebookresearch/sam2`):
-  ```bash
-  pip install "git+https://github.com/facebookresearch/sam2.git"   # needs torch>=2.5.1
-  ```
-  then download a SAM 2.1 checkpoint (e.g. `sam2.1_hiera_large.pt`) and set `CFG.sam_ckpt` /
-  `CFG.sam_model_cfg` / `CFG.sam_backend` (`'sam2'` default, or `'sam3'` / `'sam1'`). The SAM
-  refinement notebook handles the install + checkpoint download in its own cells. With no
-  backend/checkpoint, it simply passes the watershed labels through unchanged.
-- open3d's 3-D viewers open native windows locally, so you can inspect the exported `.ply` walls
-  interactively (not possible in Colab).
+```bash
+pip install "git+https://github.com/facebookresearch/sam2.git"   # needs torch>=2.5.1
+```
 
-### Not yet in the notebook pipeline
+Download a SAM 2.1 checkpoint (e.g. `sam2.1_hiera_large.pt`) and configure the path in
+`params.yaml`. If you don't have a local GPU, run the SAM notebooks in Google Colab —
+copy `scan2bim/` and the stage ZIPs to Google Drive.
 
-Opening detection (doors/windows) and IFC4 export were previously the root-level Colab
-notebooks (`RoomSegmentation.ipynb`, `WallSegmentation.ipynb`, `WallImageProcessing.ipynb`,
-`JSON_ifc4/json_to_ifc4.ipynb`), which have been removed. That logic is being consolidated
-into the `scan2bim` package and is **not yet wired into the notebook run order**  - the
-notebook pipeline currently runs through room segmentation, wall assignment, and S3DIS
-evaluation.
+---
+
+## Project structure
+
+```
+├── params.yaml               ← edit this (input path, output root, parameters)
+├── pyproject.toml
+├── scan2bim/                 ← shared package (all notebook logic lives here)
+├── notebooks/
+│   ├── preprocessing/        ← stage 1 (run once)
+│   ├── methods/
+│   │   ├── geometric/        ← CPU only
+│   │   ├── SAM/              ← GPU required
+│   │   └── geometric_SAM/    ← hybrid
+│   ├── postprocessing/       ← wall fitting, openings, IFC export
+│   ├── converters/           ← data prep (S3DIS loader)
+│   └── evaluation/           ← panoptic quality scoring
+├── data/                     ← your point clouds go here (git-ignored)
+└── scan2bim_out/             ← outputs appear here (git-ignored)
+```
 
 ---
 
 ## License
 
-Contact the authors for licensing information.
+Contact authors for licensing information.
