@@ -51,3 +51,11 @@ ifc:
   ifc_min_wall_length_m: 0.3
   ifc_default_thickness: 0.15
   ifc_project_name: Scanned Building
+
+bsdd:
+  bsdd_enrich: true
+  bsdd_server_path: "/Users/jacksonmatsumura/Documents/ONESTRUCTION-Point-Cloud-to-BIM/bSDD-mcp/build/index.js"  
+  bsdd_add_psets: true
+  bsdd_add_qtos: true
+  bsdd_add_classifications: true
+  bsdd_validate_geometry: true

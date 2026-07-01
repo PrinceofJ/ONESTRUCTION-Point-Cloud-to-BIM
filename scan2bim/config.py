@@ -163,6 +163,14 @@ class Config:
     ifc_add_floor_slabs: bool = True
     ifc_slab_thickness: float = 0.2
 
+    # ---- bSDD enrichment ----
+    bsdd_enrich: bool = False
+    bsdd_server_path: str = ''
+    bsdd_add_psets: bool = True
+    bsdd_add_qtos: bool = True
+    bsdd_add_classifications: bool = True
+    bsdd_validate_geometry: bool = True
+
     # ---- output ----
     out_root: str = 'scan2bim_out'
     out_dir: str = 'scan2bim_out'

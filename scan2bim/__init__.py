@@ -1,7 +1,7 @@
 """scan2bim - shared library for the Scan-to-BIM pipeline."""
 
 from . import config, io_utils, slab, raster, watershed, walls, sam_refine, sam_auto, viz, artifacts
-from . import wall_seg, wall_proc, ifc_export
+from . import wall_seg, wall_proc, ifc_export, bsdd_enrich
 from . import runconfig
 from . import eval
 from .config import Config
@@ -33,10 +33,12 @@ from .wall_proc import (find_void_components, merge_fragments, classify_openings
                         run_wall_image_processing)
 from .ifc_export import (build_building_json, build_ifc, compute_wall_geometry,
                          compute_room_boundaries)
+from .bsdd_enrich import enrich_ifc, BsddMcpClient, EnrichmentReport
 
 __all__ = [
     'config', 'io_utils', 'slab', 'raster', 'watershed', 'walls', 'sam_refine', 'sam_auto',
-    'viz', 'artifacts', 'runconfig', 'eval', 'wall_seg', 'wall_proc', 'ifc_export', 'Config',
+    'viz', 'artifacts', 'runconfig', 'eval', 'wall_seg', 'wall_proc', 'ifc_export',
+    'bsdd_enrich', 'Config',
     'project_root', 'load_config', 'assert_upstream_config', 'assert_points_in_grid',
     'load_point_cloud', 'estimate_ceiling', 'estimate_local_ceilings', 'crop_vertical',
     'rasterize_topdown', 'rasterize_wallness', 'rasterize_coverage', 'point_cells',
@@ -56,6 +58,7 @@ __all__ = [
     'find_void_components', 'merge_fragments', 'classify_openings',
     'process_wall_array', 'process_wall_image', 'run_wall_image_processing',
     'build_building_json', 'build_ifc', 'compute_wall_geometry', 'compute_room_boundaries',
+    'enrich_ifc', 'BsddMcpClient', 'EnrichmentReport',
 ]
 
 __version__ = '1.0.0'

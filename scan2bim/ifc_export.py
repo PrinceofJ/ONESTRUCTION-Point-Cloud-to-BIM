@@ -807,4 +807,16 @@ def build_ifc(data, out_path="model.ifc", cfg=None):
     counts = {c: len(m.by_type(c)) for c in
               ["IfcWall", "IfcDoor", "IfcWindow", "IfcSlab", "IfcSpace"]}
     logger.info("Wrote %s  ->  %s", out_path, counts)
-    return out_path
+
+    if cfg and cfg.bsdd_enrich:
+        from .bsdd_enrich import enrich_ifc
+        report = enrich_ifc(m, cfg=cfg, data=data)
+        m.write(out_path)
+        logger.info("bSDD: %d elements, %d psets, %d qtos, %d refs, %d warnings",
+                     report.elements_enriched, report.property_sets_added,
+                     report.quantity_sets_added, report.classification_refs_added,
+                     len(report.validation_warnings))
+        for w in report.validation_warnings:
+            logger.warning("bSDD validation: %s", w.message)
+
+    return out_path, m
