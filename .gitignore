@@ -34,5 +34,8 @@ data/*
 *.pth
 *.pt
 
+# MCP servers (external dependencies)
+bSDD-mcp/
+
 # Misc
 Claude Prompts Markdowns/
