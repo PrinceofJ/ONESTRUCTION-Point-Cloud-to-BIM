@@ -1,10 +1,4 @@
-"""Top-down rasterisation (section 4) + the pixel<->world transform helpers
-(``point_cells`` / ``label_points`` from section 9). Ported verbatim.
-
-These functions are shared by several stages (the transform produced here is the single
-coordinate contract for every later notebook), which is exactly why they live in the
-package rather than being copied into each notebook.
-"""
+"""Top-down rasterisation and pixel/world transform helpers."""
 
 from __future__ import annotations
 
@@ -18,7 +12,7 @@ from .slab import estimate_ceiling
 def rasterize_topdown(sliced_points, pixel_size, up_axis=2,
                       min_points_per_cell=1, thicken=0, max_cells=150_000_000,
                       save_path=None):
-    """Binary occupancy (0=wall, 255=free) + transform dict."""
+    """Binary occupancy raster + transform dict."""
     pts = np.asarray(sliced_points, np.float64)
     assert pts.ndim == 2 and pts.shape[1] == 3 and len(pts) > 0
     ax_a, ax_b = [a for a in (0, 1, 2) if a != up_axis]
@@ -27,7 +21,7 @@ def rasterize_topdown(sliced_points, pixel_size, up_axis=2,
     b_px = ((b - b.min()) / pixel_size).astype(np.int64)
     width, height = int(a_px.max()) + 1, int(b_px.max()) + 1
     if width * height > max_cells:
-        raise MemoryError(f"Grid {width*height:,} cells — raise pixel_size (unit mismatch?).")
+        raise MemoryError(f"Grid {width*height:,} cells - raise pixel_size (unit mismatch?).")
     counts = np.zeros((height, width), np.uint16)
     np.add.at(counts, (b_px, a_px), 1)
     wall = (counts >= min_points_per_cell)[::-1, :]            # flip: world-up = image-up

@@ -1,9 +1,4 @@
-"""Slab extraction (section 3 of the original notebook), ported verbatim.
-
-Keeps a horizontal slab of the cloud at wall height. The local-ceiling estimators let
-the band track dropped-ceiling lips so their walls stay separate. No behavioural change
-from the original.
-"""
+"""Slab extraction: horizontal crop at wall height."""
 
 from __future__ import annotations
 
@@ -12,8 +7,7 @@ from scipy import ndimage
 
 
 def estimate_ceiling(h, bins=256, rel_thresh=0.02, return_floor=False):
-    """Histogram-mass floor/ceiling: highest (lowest) bin still holding >= rel_thresh
-    of the busiest bin's count, so sparse stray points are ignored."""
+    """Histogram-based floor/ceiling height estimate."""
     h = np.asarray(h, np.float64)
     counts, edges = np.histogram(h, bins=bins)
     centers = 0.5 * (edges[:-1] + edges[1:])
@@ -24,17 +18,7 @@ def estimate_ceiling(h, bins=256, rel_thresh=0.02, return_floor=False):
 
 def estimate_local_ceilings(points, up_axis=2, cell_size_m=1.0,
                             min_pts_per_cell=20, smooth_cells=1):
-    """Per-point ceiling height from a grid of per-cell histogram-mass estimates.
-
-    smooth_cells == 1  -> RAW per-cell: each point uses ITS OWN cell's ceiling. A
-        dropped-ceiling 'lip' keeps its true lower height, so the slab tracks under it and
-        the lip's walls stay separate. Most faithful to multi-height ceilings; more
-        sensitive to per-cell noise.
-    smooth_cells > 1   -> median-filter the grid first: suppresses per-cell noise but
-        erases lips narrower than the window.
-    Cells with < min_pts_per_cell points fall back to the global ceiling. Smaller
-    cell_size_m resolves finer lips (at the cost of noise).
-    """
+    """Per-point ceiling height from a grid of local estimates."""
     pts = np.asarray(points, np.float64); h = pts[:, up_axis]
     ax_a, ax_b = [a for a in (0, 1, 2) if a != up_axis]
     a, b = pts[:, ax_a], pts[:, ax_b]
@@ -57,11 +41,7 @@ def estimate_local_ceilings(points, up_axis=2, cell_size_m=1.0,
 
 
 def crop_vertical(points, cfg, debug=False, return_info=False):
-    """Keep points in a horizontal slab. Returns (slab_points, mask[, info]).
-
-    'ceiling' mode supports cfg.ceiling_mode: 'global' | 'local_smoothed' |
-    'local_perpoint'. info carries ref/keep_lo/keep_hi (scalar or per-point) for debug.
-    """
+    """Keep points in a horizontal slab. Returns (slab_points, mask[, info])."""
     pts = np.asarray(points, np.float64); h = pts[:, cfg.up_axis]
     mode = cfg.slab_relative_to
     if mode == 'absolute':

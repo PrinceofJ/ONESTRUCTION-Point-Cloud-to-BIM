@@ -1,10 +1,4 @@
-"""Debug / QA visualisations (section 10 of the original), ported verbatim, plus one
-new plot (``show_wall_assignment``) for the boundary-ring wall masks.
-
-``supervision`` is imported lazily inside the annotator so the module imports without it.
-All functions are optional QA helpers; the notebooks call them but none of the pipeline
-logic depends on them.
-"""
+"""Debug / QA visualisations."""
 
 from __future__ import annotations
 
@@ -126,7 +120,7 @@ def show_ceiling_map(points, cfg):
     fig, ax = plt.subplots(1, 2, figsize=(16, 6))
     sc = ax[0].scatter(pts[s, aa], pts[s, bb], s=1, c=ceil_pp[s], cmap='viridis')
     ax[0].set_aspect('equal'); fig.colorbar(sc, ax=ax[0], label='local ceiling height (m)')
-    ax[0].set_title(f'local ceiling map (global = {g:.2f} m) — lower patches = dropped lips')
+    ax[0].set_title(f'local ceiling map (global = {g:.2f} m) -lower patches = dropped lips')
     ax[0].set_xlabel(nm[aa]); ax[0].set_ylabel(nm[bb])
     ax[1].hist(ceil_pp, bins=120, color='teal')
     ax[1].axvline(g, color='r', lw=1, label=f'global {g:.2f} m')
@@ -175,18 +169,17 @@ def show_sam_debug(aux, geom_labels, fused_labels):
     residual = (~walls) & (geom_labels == 0) & foot
     fig, ax = plt.subplots(1, 3, figsize=(18, 6))
     ax[0].imshow(colorize_labels(geom_labels)); _annotate_ids(ax[0], geom_labels)
-    ax[0].set_title('Pass 1 — geometry')
+    ax[0].set_title('Pass 1 -geometry')
     r = np.zeros((*residual.shape, 3)); r[walls] = (0, 0, 0); r[residual] = (1, 0.45, 0)
     ax[1].imshow(r); ax[1].set_title('residual free space (SAM searches here)')
     ax[2].imshow(colorize_labels(fused_labels)); _annotate_ids(ax[2], fused_labels)
-    ax[2].set_title('refined — geometry + SAM')
+    ax[2].set_title('refined -geometry + SAM')
     for a in ax:
         a.axis('off')
     plt.tight_layout(); plt.show()
 
 
 def show_room_footprints(labels, do_buffer_px):
-    """LEGACY overlay: which wall columns the *old* raster-overlap method would export."""
     foot = room_footprints(labels, margin=do_buffer_px, walls_only=True)
     H, W = labels.shape; rgb = np.ones((H, W, 3)); rgb[labels == -1] = (0.85, 0.85, 0.85)
     cmap = plt.get_cmap('tab20')
@@ -199,8 +192,6 @@ def show_room_footprints(labels, do_buffer_px):
 
 
 def show_wall_assignment(labels, wall_masks, debug=None, title='boundary-ring wall assignment'):
-    """NEW: visualise the boundary-ring per-room wall pixels (and, if provided, the
-    ring construction for one room)."""
     H, W = labels.shape
     rgb = np.ones((H, W, 3)); rgb[labels == -1] = (0.85, 0.85, 0.85)
     cmap = plt.get_cmap('tab20')
@@ -250,5 +241,72 @@ def show_coverage_debug(aux, geom_labels, cfg):
     ax[1].set_title(f'rooms + scan coverage %  (red = below {thr:.0%}, dropped)'); ax[1].axis('off')
     ax[2].imshow(colorize_labels(geom_labels)); _annotate_ids(ax[2], geom_labels)
     n = len([r for r in np.unique(geom_labels) if r >= 1])
-    ax[2].set_title(f'after void removal — {n} rooms'); ax[2].axis('off')
+    ax[2].set_title(f'after void removal -{n} rooms'); ax[2].axis('off')
+    plt.tight_layout(); plt.show()
+
+
+def show_wall_images(flats, room_name='', cols=3):
+    import math as _math
+    n = len(flats)
+    if n == 0:
+        print('No walls to display.')
+        return
+    rows = _math.ceil(n / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4 * rows), squeeze=False)
+    for i, flat in enumerate(flats):
+        ax = axes[i // cols][i % cols]
+        ax.imshow(flat['image'], cmap='gray', aspect='equal',
+                  extent=[0, flat['width_m'], 0, flat['height_m']])
+        ax.set_xlabel('along wall (m)')
+        ax.set_ylabel('height (m)')
+        ax.set_title(f"wall {i + 1} -{flat['width_m']:.1f} x {flat['height_m']:.1f} m",
+                     fontsize=10)
+    for j in range(n, rows * cols):
+        axes[j // cols][j % cols].set_visible(False)
+    fig.suptitle(f'{room_name}: {n} wall images', fontsize=14, y=1.01)
+    plt.tight_layout(); plt.show()
+
+
+def show_floor_plan(building_json):
+    import math as _math
+    import matplotlib.patches as mpatches
+    data = building_json
+    fig, ax = plt.subplots(figsize=(12, 10))
+    for wall in data['walls']:
+        sx, sy = wall['start']
+        ex, ey = wall['end']
+        ax.plot([sx, ex], [sy, ey], 'k-', linewidth=2)
+        mx, my = (sx + ex) / 2, (sy + ey) / 2
+        ax.annotate(wall['id'], (mx, my), fontsize=6, color='red',
+                    ha='center', va='bottom', fontweight='bold')
+    for door in data.get('doors', []):
+        wall = next((w for w in data['walls'] if w['id'] == door['wall']), None)
+        if not wall:
+            continue
+        sx, sy = wall['start']; ex, ey = wall['end']
+        length = _math.hypot(ex - sx, ey - sy)
+        if length == 0:
+            continue
+        ux, uy = (ex - sx) / length, (ey - sy) / length
+        dx = sx + ux * door['offset']
+        dy = sy + uy * door['offset']
+        ax.plot(dx, dy, 's', color='dodgerblue', markersize=8)
+    for room in data.get('rooms', []):
+        bnd = room.get('boundary', [])
+        if len(bnd) >= 3:
+            poly = plt.Polygon(bnd, fill=True, facecolor=(0.9, 0.95, 1.0, 0.3),
+                               edgecolor='steelblue', linewidth=0.8, linestyle='--')
+            ax.add_patch(poly)
+            cx = np.mean([p[0] for p in bnd])
+            cy = np.mean([p[1] for p in bnd])
+            ax.text(cx, cy, room.get('name', ''), fontsize=8, ha='center',
+                    va='center', color='steelblue', fontstyle='italic')
+    ax.set_aspect('equal', adjustable='datalim')
+    ax.set_xlabel('X (m)'); ax.set_ylabel('Y (m)')
+    ax.set_title(f"{data.get('project', {}).get('name', 'Building')} -"
+                 f"{len(data['walls'])} walls, {len(data.get('doors', []))} doors")
+    ax.legend(handles=[
+        mpatches.Patch(color='black', label='Wall'),
+        mpatches.Patch(color='dodgerblue', label='Door'),
+    ], fontsize=8, loc='upper right')
     plt.tight_layout(); plt.show()

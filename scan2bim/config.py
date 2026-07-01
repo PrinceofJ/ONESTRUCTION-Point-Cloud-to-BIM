@@ -1,14 +1,4 @@
-"""Single source of truth for all pipeline configuration.
-
-This is a *superset* of the ``CFG`` dataclass in the original monolithic notebook.
-Every field that existed before keeps its original name **and original default**, so
-the rasterisation, slab extraction and watershed segmentation behave identically to
-the original notebook. New fields are grouped and clearly marked ``# NEW``.
-
-All distance thresholds are in **metres** (the cloud is converted to metres once on
-load). Pixel-space equivalents are exposed as ``*_px`` properties so nothing downstream
-hard-codes a pixel count.
-"""
+"""Pipeline configuration."""
 
 from __future__ import annotations
 
@@ -18,14 +8,8 @@ from dataclasses import dataclass, asdict
 @dataclass
 class Config:
     # ---- input ----
-    # The pipeline is dataset-agnostic: point `file_path` at the real-life scan to segment and
-    # `gt_dir` at the matching ground-truth model. BOTH are config inputs (no hardcoded paths),
-    # both relative to the project root and resolved to absolute by load_config(). They must
-    # share the same world XY frame + units; gt_raster.ipynb asserts this before scoring (a
-    # mismatched pair — e.g. the area1.xyz scan with the wrong area's GT — back-projects to a
-    # low in-grid fraction and hard-fails). area1.xyz pairs with data/Area_1 (verified ~100%).
-    file_path: str = 'data/area1.xyz'      # the real-life scan to segment (must be a FULL cloud — interior points present)
-    gt_dir: str = 'data/Area_1'            # ground-truth model: a dir of per-room point files <room>/<room>.txt
+    file_path: str = 'data/penthouse_merged.ply'
+    gt_dir: str = 'data/Area_1'
     units_per_meter: float = 1.0
     up_axis: int = 2                       # 0=X 1=Y 2=Z
 
@@ -63,13 +47,8 @@ class Config:
     coverage_close_px: int = 2
     min_coverage_frac: float = 0.25
 
-    # ---- room seg: PASS 2 (prompted SAM refinement; Notebook 4) ----
-    # SAM does NOT segment the image blindly. It is PROMPTED per watershed room (points
-    # from the room's eroded interior + the room box), so every returned mask is labelled
-    # by construction. A single-pass region-adjacency-graph relabel then lets a confident
-    # SAM mask merge/split rooms — but only where the geometry is weak (an open
-    # distance-transform ridge, never on wall pixels). The watershed is always the prior.
-    use_sam_recall: bool = True            # master switch for the SAM refinement stage
+    # ---- room seg: PASS 2 (prompted SAM refinement) ----
+    use_sam_recall: bool = True
     sam_arch: str = 'vit_h'                # SAM1 architecture key (sam_model_registry)
     sam_ckpt: str = '/content/sam2.1_hiera_large.pt'           # SAM checkpoint path
     sam_model_cfg: str = 'configs/sam2.1/sam2.1_hiera_l.yaml'  # SAM2/SAM3 Hydra config name
@@ -85,30 +64,13 @@ class Config:
     ransac_min_inliers: int = 400
     ransac_max_planes: int = 20
 
-    # =====================================================================
-    # NEW — boundary-ring room-to-wall assignment (Notebook 2)
-    # =====================================================================
-    # The new wall-assignment derives each room's walls from a *boundary ring*
-    # (room mask minus its eroded interior), dilated outward to reach the wall.
-    #   room_erode_m  -> erosion radius used to obtain the reliable interior I_i.
-    #                    Also equals the thickness of the boundary ring B_i = M_i \ I_i.
-    #   wall_dilate_m -> r_w, how far the ring is dilated outward to capture wall
-    #                    pixels from the wallness raster.
-    # Set either to ``None`` to auto-derive it from the estimated wall thickness
-    # (the same distance-transform median heuristic the original used in
-    # ``room_footprints``); see walls.estimate_wall_thickness_px / resolve_ring_radii_px.
-    room_erode_m: float | None = 0.125      # NEW: erosion radius -> reliable interior (ring thickness)
-    wall_dilate_m: float | None = 0.15     # NEW: r_w -> outward reach to grab wall pixels
-    wall_source: str = 'wallness'          # NEW: 'wallness' (spec) | 'occupancy' (legacy compatibility)
+    # ---- boundary-ring wall assignment ----
+    room_erode_m: float | None = 0.125
+    wall_dilate_m: float | None = 0.15
+    wall_source: str = 'wallness'          # 'wallness' | 'occupancy'
 
-    # =====================================================================
-    # NEW — SAM backend abstraction (Notebook 4)
-    # =====================================================================
-    # The refinement runs on SAM2. Inference is wrapped behind a MaskGenerator adapter so
-    # a different model is reached by changing this one string (and supplying the matching
-    # checkpoint + config) with no change to the refinement code — e.g. 'sam3' once that
-    # build is available, or 'sam1' for the original Segment-Anything predictor.
-    sam_backend: str = 'sam2'              # 'sam2' (default) | 'sam3' | 'sam1'
+    # ---- SAM backend ----
+    sam_backend: str = 'sam2'              # 'sam2' | 'sam3' | 'sam1'
 
     # ---- prompting (per watershed room) ----
     sam_image_mode: str = 'stack'          # SAM input image: 'stack' = occupancy+wallness+
@@ -133,53 +95,81 @@ class Config:
 
     sam_refine_qa_cloud: bool = False      # load the cloud in N4 only for optional QA
 
-    # =====================================================================
-    # NEW — pure-SAM automatic room segmentation (Method 2; paper Table 1 / §3.1)
-    # =====================================================================
-    # The pure-SAM method runs SAM in AUTOMATIC "segment everything" mode (NO watershed
-    # prior, NO prompts) on the SAME Stage-1 rasters the other two methods consume, so
-    # every method emits room_labels.npy on one shared grid -> a clean three-way
-    # comparison with zero resampling. This is distinct from the PROMPTED refinement above
-    # (use_sam_recall / sam_conf_thresh / ...). The SAM backend + checkpoint fields
-    # (sam_backend, sam_arch, sam_ckpt, sam_model_cfg) are SHARED with the refinement.
-    #
-    # SAM automatic-mask-generator parameters (paper Table 1). points_per_side is the one
-    # the paper tuned per case study (11/15/30); the rest were held fixed across CS1-3.
-    sam_points_per_side: int = 15               # paper 'points_': 11 (CS1) / 15 (CS2) / 30 (CS3)
+    # ---- pure-SAM automatic segmentation (Method 2) ----
+    sam_points_per_side: int = 15
     sam_pred_iou_thresh: float = 0.85           # paper 'iou_'
     sam_stability_score_thresh: float = 0.95    # paper 'stability_'
     sam_crop_n_layers: int = 1                  # paper 'n_layers'
     sam_crop_n_points_downscale_factor: int = 2  # paper 'down_factor'
-    sam_min_mask_region_area: int = 100         # paper 'min_mask' (px) — raw-mask noise floor
+    sam_min_mask_region_area: int = 100
 
-    # room / not-room classification (paper §3.1; the 'A' threshold). Kept SEPARATE from the
-    # watershed's min_room_area_m2 (1.0) so each method uses its own faithful value.
     sam_auto_min_room_area_m2: float = 1.5      # paper 'A' = 1.5 m^2
-    # drop a mask whose pixels sit mostly OFF scanned coverage (exterior / unscanned void):
     sam_auto_min_coverage_frac: float = 0.5     # keep a mask only if >= this frac is on coverage
 
-    # raster boundary buffer (paper 'do' = half wall thickness). OFF by default: our
-    # downstream boundary-ring wall-assignment already recovers wall points in 3-D, and
-    # keeping walls as hard -1 barriers matches the other two methods' label convention
-    # exactly (apples-to-apples pq_eval). Reuses do_buffer_m / do_buffer_px when enabled.
     sam_auto_buffer_rooms: bool = False
 
-    # corridor reprocessing (paper §4.2): re-run SAM on the residual free space with a
-    # sparser point grid to catch corridors the first pass missed. OFF by default so the
-    # single-pass baseline is clean; enable for the paper-faithful two-pass result.
     sam_reprocess_residual: bool = False
     sam_residual_points_per_side: int = 5       # paper points_=5 on the residual
 
-    # =====================================================================
-    # NEW — structured outputs / staging
-    # =====================================================================
-    out_root: str = 'scan2bim_out'  # NEW: base output dir; local relative path (set via os.path.join(PROJECT_ROOT, ...) in notebooks)
-    out_dir: str = 'scan2bim_out'  # legacy field (kept for compatibility; unused)
+    # ---- wall segmentation ----
+    normal_radius_m: float = 0.10
+    normal_max_nn: int = 30
+    normal_tol_deg: float = 15.0
+    wseg_angle_tol_deg: float = 10.0
+    offset_tol_m: float = 0.20
+    min_wall_points: int = 200
+    flat_pixel_m: float = 0.04
+    flat_min_pts_per_cell: int = 1
+    morph_close_px: int = 5
+    morph_open_px: int = 3
+    density_filter_radius: int = 0
+    density_filter_threshold: int = 2
+    sor_neighbours: int = 20
+    sor_std_ratio: float = 2.0
 
-    # ---------- pixel-space conversions ----------
+    # ---- wall image processing (door/window detection) ----
+    wproc_sam_checkpoint: str = 'sam_vit_b_01ec64.pth'
+    wproc_sam_model_type: str = 'vit_b'
+    wproc_sam_upscale: int = 4
+    wproc_sam_points_per_void: int = 5
+    min_void_px: int = 40
+    min_rectangularity: float = 0.55
+    door_min_width_m: float = 0.50
+    door_max_width_m: float = 1.80
+    door_min_height_m: float = 1.80
+    door_max_height_m: float = 2.80
+    door_floor_margin_px: int = 3
+    door_max_wall_width_frac: float = 0.85
+    window_min_width_m: float = 0.30
+    window_max_width_m: float = 2.50
+    window_min_height_m: float = 0.30
+    window_max_height_m: float = 2.00
+    window_min_sill_m: float = 0.30
+
+    # ---- IFC export ----
+    ifc_min_directions: int = 2
+    ifc_min_wall_length_m: float = 0.3
+    ifc_max_wall_length_m: float = 15.0
+    ifc_min_wall_aspect_ratio: float = 0.15
+    ifc_max_wall_thickness_m: float = 0.40
+    ifc_min_wall_fill_ratio: float = 0.15
+    ifc_default_thickness: float = 0.15
+    ifc_exterior_thickness: float = 0.30
+    ifc_max_merge_thickness: float = 0.45
+    ifc_dedup_offset_tol: float = 0.45
+    ifc_snap_tolerance_m: float = 0.15
+    ifc_project_name: str = 'Scanned Building'
+    ifc_floor_elevation: float = 0.0
+    ifc_add_floor_slabs: bool = True
+    ifc_slab_thickness: float = 0.2
+
+    # ---- output ----
+    out_root: str = 'scan2bim_out'
+    out_dir: str = 'scan2bim_out'
+
     @property
     def seal_gap_px(self) -> int:
-        return 0  # blanket sealing is OFF by design; use seal_at_doors() instead
+        return 0
 
     @property
     def min_room_area_px(self) -> int:
@@ -190,11 +180,9 @@ class Config:
         return max(1, int(round(self.do_buffer_m / self.pixel_m)))
 
     def to_dict(self) -> dict:
-        """JSON-serialisable snapshot for reproducibility (saved into every stage ZIP)."""
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Config":
-        """Rebuild a Config from a saved snapshot, ignoring unknown keys."""
         fields = set(cls.__dataclass_fields__.keys())
         return cls(**{k: v for k, v in d.items() if k in fields})

@@ -1,26 +1,19 @@
-"""Wall segmentation: normal-direction + offset clustering, 2D flattening."""
+"""Wall segmentation and 2D flattening."""
 
 from __future__ import annotations
 
+import json
 import logging
-import math
 import os
 
 import cv2
 import numpy as np
-import open3d as o3d
 from PIL import Image
 from scipy.ndimage import uniform_filter1d
 from scipy.signal import find_peaks
 
-from .config import WallSegConfig
-
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _cluster_1d_gaps(values, tol):
     if len(values) == 0:
@@ -41,13 +34,10 @@ def _cluster_1d_gaps(values, tol):
 def _find_angle_peaks(theta, n_bins=180, smooth_width=5, min_height_frac=0.08):
     counts, edges = np.histogram(theta, bins=n_bins, range=(0, np.pi))
     centres = 0.5 * (edges[:-1] + edges[1:])
-
     tiled = np.concatenate([counts, counts, counts])
     smoothed_tiled = uniform_filter1d(tiled.astype(float), size=smooth_width)
-
-    height_thr = smoothed_tiled[n_bins : 2 * n_bins].max() * min_height_frac
+    height_thr = smoothed_tiled[n_bins:2 * n_bins].max() * min_height_frac
     min_dist = max(1, int(15 / (180 / n_bins)))
-
     all_peaks, _ = find_peaks(smoothed_tiled, height=height_thr, distance=min_dist)
 
     peak_bins: list[int] = []
@@ -69,7 +59,7 @@ def _find_angle_peaks(theta, n_bins=180, smooth_width=5, min_height_frac=0.08):
         if not merged:
             final_bins.append(b)
 
-    smoothed = smoothed_tiled[n_bins : 2 * n_bins]
+    smoothed = smoothed_tiled[n_bins:2 * n_bins]
     peak_centres = centres[np.array(final_bins, dtype=int)] if final_bins else np.array([])
     return peak_centres, smoothed, centres
 
@@ -82,15 +72,9 @@ def _assign_to_nearest_peak(theta, peak_centres):
     return labels
 
 
-# ---------------------------------------------------------------------------
-# Core segmentation
-# ---------------------------------------------------------------------------
+def segment_walls(pcd, cfg):
+    import open3d as o3d
 
-def segment_walls(pcd, cfg: WallSegConfig):
-    """Segment a room point cloud into individual wall clusters.
-
-    Returns a list of dicts with 'cloud', 'normal_2d', 'offset'.
-    """
     up_axis = cfg.up_axis
     if len(pcd.points) < cfg.min_wall_points:
         logger.warning("Too few points (%d) for wall segmentation.", len(pcd.points))
@@ -113,10 +97,8 @@ def segment_walls(pcd, cfg: WallSegConfig):
 
     pts_v = pts[vert_mask]
     norms_v = norms[vert_mask]
-    logger.info(
-        "Vertical-surface points: %s / %s (%.1f%%)",
-        f"{len(pts_v):,}", f"{len(pts):,}", 100 * len(pts_v) / max(1, len(pts)),
-    )
+    logger.info("Vertical-surface points: %d / %d (%.1f%%)",
+                len(pts_v), len(pts), 100 * len(pts_v) / max(1, len(pts)))
 
     if len(pts_v) < cfg.min_wall_points:
         logger.warning("Too few vertical points (%d).", len(pts_v))
@@ -128,11 +110,8 @@ def segment_walls(pcd, cfg: WallSegConfig):
     theta = np.arctan2(nh[:, 1], nh[:, 0]) % np.pi
 
     peak_centres, smoothed, bin_centres = _find_angle_peaks(theta)
-    logger.info(
-        "Angle peaks: %d  at %s",
-        len(peak_centres),
-        [f"{np.degrees(p):.1f}" for p in peak_centres],
-    )
+    logger.info("Angle peaks: %d  at %s", len(peak_centres),
+                [f"{np.degrees(p):.1f}" for p in peak_centres])
 
     if len(peak_centres) == 0:
         logger.warning("No angle peaks found.")
@@ -146,10 +125,8 @@ def segment_walls(pcd, cfg: WallSegConfig):
         a_mask = angle_labels == a_label
         a_pts = pts_v[a_mask]
         a_nh = nh[a_mask]
-
         mean_n = a_nh.mean(axis=0)
         mean_n /= np.linalg.norm(mean_n) + 1e-9
-
         offsets = a_pts[:, ha] * mean_n[0] + a_pts[:, hb] * mean_n[1]
         off_labels = _cluster_1d_gaps(offsets, cfg.offset_tol_m)
 
@@ -158,20 +135,17 @@ def segment_walls(pcd, cfg: WallSegConfig):
             wall_pts = a_pts[o_mask]
             if len(wall_pts) < cfg.min_wall_points:
                 continue
-
             cloud = o3d.geometry.PointCloud()
             cloud.points = o3d.utility.Vector3dVector(wall_pts)
             if pcd.has_colors():
                 colors_v = np.asarray(pcd.colors)[vert_mask]
                 cloud.colors = o3d.utility.Vector3dVector(colors_v[a_mask][o_mask])
-
             walls.append({
                 "cloud": cloud,
                 "normal_2d": mean_n.copy(),
                 "offset": float(offsets[o_mask].mean()),
             })
 
-    # Attach diagnostic data to first wall for optional viz
     if walls:
         walls[0]["_theta_peaks"] = peak_centres
         walls[0]["_theta_smooth"] = smoothed
@@ -180,10 +154,6 @@ def segment_walls(pcd, cfg: WallSegConfig):
     logger.info("Walls found: %d", len(walls))
     return walls
 
-
-# ---------------------------------------------------------------------------
-# Wall flattening — 3D → 2D frontal images
-# ---------------------------------------------------------------------------
 
 def _density_filter(binary_img, radius=2, threshold=3):
     wall = (binary_img == 0).astype(np.float32)
@@ -213,11 +183,9 @@ def _clean_wall_image(image, close_px=3, open_px=2,
     return 255 - wall
 
 
-def flatten_wall(wall, cfg: WallSegConfig):
-    """Project a wall's 3D points onto its plane and rasterize to a 2D image.
+def flatten_wall(wall, cfg):
+    import open3d as o3d
 
-    Returns a dict with 'image', 'image_raw', coordinate frame info, etc.
-    """
     pts = np.asarray(wall["cloud"].points)
     n2d = wall["normal_2d"]
     n_pts_raw = len(pts)
@@ -232,7 +200,6 @@ def flatten_wall(wall, cfg: WallSegConfig):
         pts = pts[inlier_idx]
 
     n_pts_clean = len(pts)
-
     up = np.zeros(3)
     up[up_axis] = 1.0
     ha, hb = [a for a in range(3) if a != up_axis]
@@ -259,7 +226,7 @@ def flatten_wall(wall, cfg: WallSegConfig):
 
     counts = np.zeros((height, width), dtype=np.uint16)
     np.add.at(counts, (v_px, u_px), 1)
-    occupied = counts >= cfg.min_pts_per_cell
+    occupied = counts >= cfg.flat_min_pts_per_cell
     occupied = occupied[::-1, :]
     image_raw = np.where(occupied, 0, 255).astype(np.uint8)
 
@@ -273,23 +240,17 @@ def flatten_wall(wall, cfg: WallSegConfig):
     origin += u_min * u_axis + v_min * v_axis
 
     return {
-        "image": image,
-        "image_raw": image_raw,
+        "image": image, "image_raw": image_raw,
         "u": u, "v": v,
         "u_axis": u_axis, "v_axis": v_axis,
-        "origin": origin,
-        "pixel_m": pixel_m,
+        "origin": origin, "pixel_m": pixel_m,
         "width_m": float(u_shifted.max()),
         "height_m": float(v_shifted.max()),
-        "n_pts_raw": n_pts_raw,
-        "n_pts_clean": n_pts_clean,
+        "n_pts_raw": n_pts_raw, "n_pts_clean": n_pts_clean,
     }
 
 
-def save_wall_images(walls, room_name: str, out_dir: str, cfg: WallSegConfig):
-    """Flatten every wall and save as clean PNGs. Returns list of flat dicts."""
-    import json
-
+def save_wall_images(walls, room_name, out_dir, cfg):
     room_dir = os.path.join(out_dir, room_name)
     os.makedirs(room_dir, exist_ok=True)
 
@@ -318,16 +279,8 @@ def save_wall_images(walls, room_name: str, out_dir: str, cfg: WallSegConfig):
     return flats
 
 
-# ---------------------------------------------------------------------------
-# High-level driver
-# ---------------------------------------------------------------------------
-
-def run_wall_segmentation(room_cloud_paths: list[str], cfg: WallSegConfig, out_dir: str):
-    """Run wall segmentation on all room clouds.
-
-    Returns dict mapping room_name -> list of flat dicts.
-    """
-    from .io import load_room_cloud
+def run_wall_segmentation(room_cloud_paths, cfg, out_dir):
+    import open3d as o3d
 
     os.makedirs(out_dir, exist_ok=True)
     all_results = {}
@@ -335,11 +288,12 @@ def run_wall_segmentation(room_cloud_paths: list[str], cfg: WallSegConfig, out_d
     for room_path in room_cloud_paths:
         fname = os.path.splitext(os.path.basename(room_path))[0]
         room_name = fname.replace("_walls", "")
-
         logger.info("Processing %s", room_name)
         try:
-            room_pcd, _ = load_room_cloud(room_path, voxel_m=cfg.voxel_m)
-            walls = segment_walls(room_pcd, cfg)
+            pcd = o3d.io.read_point_cloud(room_path)
+            if cfg.voxel_m > 0:
+                pcd = pcd.voxel_down_sample(cfg.voxel_m)
+            walls = segment_walls(pcd, cfg)
             if walls:
                 flats = save_wall_images(walls, room_name, out_dir, cfg)
                 all_results[room_name] = flats
@@ -349,5 +303,5 @@ def run_wall_segmentation(room_cloud_paths: list[str], cfg: WallSegConfig, out_d
             logger.error("  %s: ERROR %s", room_name, e)
 
     total = sum(len(v) for v in all_results.values())
-    logger.info("Done — %d rooms, %d total wall images", len(all_results), total)
+    logger.info("Done: %d rooms, %d total wall images", len(all_results), total)
     return all_results
