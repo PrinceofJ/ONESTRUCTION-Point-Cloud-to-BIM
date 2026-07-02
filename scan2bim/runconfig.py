@@ -27,7 +27,11 @@ def project_root(start=None) -> str:
 def _resolve(root, path):
     if not path:
         return path
-    return path if os.path.isabs(path) else os.path.normpath(os.path.join(root, path))
+    # Normalise separators FIRST: a params.yaml authored on Windows may contain
+    # 'data\Area_1'; on POSIX (Colab) the backslash is a literal filename char and the
+    # path silently fails to resolve. Forward slashes work on both platforms.
+    p = str(path).replace('\\', '/')
+    return p if os.path.isabs(p) else os.path.normpath(os.path.join(root, p))
 
 
 def _collect_overrides(doc, fields, out, prefix=''):
@@ -42,24 +46,69 @@ def _collect_overrides(doc, fields, out, prefix=''):
                 f"Check for a typo (e.g. 'pixel_size' should be 'pixel_m').")
 
 
-def load_config(params='params.yaml', start=None, **overrides) -> Config:
+def load_config(params='params.yaml', start=None, method=None, **overrides) -> Config:
+    """Build the effective Config. Precedence (last wins):
+
+        Config defaults  <  params.yaml top-level  <  params.yaml methods.<method>  <  **overrides
+
+    ``method`` selects a per-method override block from the top-level ``methods:``
+    mapping in params.yaml (e.g. ``load_config(method='sam_auto')``). Method notebooks
+    MUST pass their method name instead of mutating ``CFG`` fields after load — the
+    per-method values are declared data in params.yaml, not imperative notebook edits.
+    ``**overrides`` are reserved for runtime/environment values only (a Colab checkpoint
+    path, an out_root on a mounted drive), never for science parameters.
+    """
     root = project_root(start)
     fields = set(Config.__dataclass_fields__)
 
     params_path = params if os.path.isabs(params) else os.path.join(root, params)
     merged = {}
+    method_blocks = {}
     if os.path.isfile(params_path):
         import yaml
         with open(params_path) as f:
             doc = yaml.safe_load(f) or {}
+        # Pop 'methods' BEFORE the flat collect: _collect_overrides recurses every
+        # nested mapping, so an un-popped methods block would apply EVERY method's
+        # overrides globally (and in dict order, so the last method would win).
+        method_blocks = doc.pop('methods', None) or {}
+        if not isinstance(method_blocks, dict):
+            raise TypeError(
+                "params.yaml: 'methods' must be a mapping of method name -> "
+                "{Config field: value}, e.g. methods: {sam_auto: {sam_image_mode: occupancy}}")
         _collect_overrides(doc, fields, merged)
+    if method is not None:
+        if method not in method_blocks:
+            raise KeyError(
+                f"load_config(method={method!r}): params.yaml declares no "
+                f"'methods.{method}' block. Declared methods: "
+                f"{sorted(method_blocks) or '(none)'}.")
+        _collect_overrides(method_blocks[method] or {}, fields, merged,
+                           prefix=f'methods.{method}.')
     merged.update(overrides)                      # explicit kwargs win over the file
 
     cfg = Config(**merged)
     cfg.file_path = _resolve(root, cfg.file_path)
     cfg.gt_dir = _resolve(root, cfg.gt_dir)
     cfg.out_root = _resolve(root, cfg.out_root)
+    cfg.method = method            # provenance for config_snapshot (not a dataclass field)
     return cfg
+
+
+def config_snapshot(cfg) -> str:
+    """Loggable resolved-config view: the selected method + every field whose value
+    deviates from the Config dataclass default. Drivers print this right after
+    load_config() so each run records exactly which knobs were in effect."""
+    defaults = Config()
+    method = getattr(cfg, 'method', None)
+    lines = [f"resolved config (method={method or 'global'}):"]
+    for f in sorted(Config.__dataclass_fields__):
+        have, base = getattr(cfg, f), getattr(defaults, f)
+        if have != base:
+            lines.append('  %-30s = %r   (default %r)' % (f, have, base))
+    if len(lines) == 1:
+        lines.append('  (all fields at Config defaults)')
+    return '\n'.join(lines)
 
 
 def assert_upstream_config(cfg, upstream_cfg_dict, fields=GEOMETRY_FIELDS):

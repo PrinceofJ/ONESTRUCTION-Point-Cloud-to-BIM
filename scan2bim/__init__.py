@@ -26,7 +26,7 @@ from . import runconfig
 from . import eval
 from .config import Config
 
-from .runconfig import (project_root, load_config,
+from .runconfig import (project_root, load_config, config_snapshot,
                         assert_upstream_config, assert_points_in_grid)
 from .io_utils import load_point_cloud
 from .slab import estimate_ceiling, estimate_local_ceilings, crop_vertical
@@ -60,7 +60,8 @@ __all__ = [
     'config', 'io_utils', 'slab', 'raster', 'watershed', 'walls', 'sam_refine', 'sam_auto',
     'viz', 'artifacts', 'runconfig', 'eval', 'wall_seg', 'wall_proc', 'ifc_export',
     'bsdd_enrich', 'Config',
-    'project_root', 'load_config', 'assert_upstream_config', 'assert_points_in_grid',
+    'project_root', 'load_config', 'config_snapshot',
+    'assert_upstream_config', 'assert_points_in_grid',
     'load_point_cloud', 'estimate_ceiling', 'estimate_local_ceilings', 'crop_vertical',
     'rasterize_topdown', 'rasterize_coverage', 'point_cells',
     'label_points', 'grid_world_bbox', 'interior_coverage_fraction',

@@ -1,71 +1,206 @@
-# params.yaml - pipeline configuration
-# Edit values here; notebooks read via scan2bim.load_config().
-# Keys match Config field names. Sections are for readability only.
+# params.yaml — THE single editable configuration surface for the whole pipeline.
+#
+#   - Every Config field (scan2bim/config.py) is listed here; edit values HERE, never in
+#     notebook cells and never by changing config.py defaults.
+#   - Section headers are cosmetic (keys are flat Config field names); unknown keys REJECT
+#     at load with a KeyError, so typos can't silently do nothing.
+#   - Per-method differences live in the `methods:` block at the bottom; notebooks select
+#     them via scan2bim.load_config(method='<name>') — they do NOT mutate CFG after load.
+#   - Precedence (last wins): Config defaults < this file < methods.<name> < runtime kwargs.
+#   - Paths: ALWAYS forward slashes (data/Area_1). The loader normalises separators, but
+#     forward slashes are the convention — this file travels to Colab (Linux) via git.
+#   - Full documentation: CONFIGURATION.md at the repo root.
 
+# ============================== input =====================================================
 input:
-  file_path: data\area1.xyz     # the real-life scan to SEGMENT (full cloud); pairs with gt_dir below
+  file_path: data/area1.xyz      # the real-life scan to SEGMENT (FULL cloud); pairs with gt_dir
   units_per_meter: 1.0           # raw units per metre (1.0 if already in metres)
+  up_axis: 2                     # 0=X 1=Y 2=Z
 
 groundtruth:
-  gt_dir: data/Area_1            # ground-truth model dir (per-room <room>/<room>.txt); same frame as the scan
+  gt_dir: data/Area_1            # ground-truth dir (per-room Annotations/); SAME frame as the scan
 
 output:
-  out_root: scan2bim_out
+  out_root: scan2bim_out         # base output dir; each stage writes stage*/ + stage*.zip here
 
-raster:
-  pixel_m: 0.03
+# ============================== cleaning / sampling =======================================
+cleaning:
+  voxel_m: 0.02                  # voxel downsample size
 
-watershed:
-  min_coverage_frac: 0.25
-
+# ============================== slab (horizontal crop) ====================================
 slab:
-  slab_lo_m: 0.1
-  slab_hi_m: 0.2
+  slab_relative_to: ceiling      # 'ceiling' | 'floor' | 'absolute'
+  slab_lo_m: 0.1                 # shallower band edge (closer to the reference)
+  slab_hi_m: 0.2                 # deeper band edge
+  ceiling_mode: local_perpoint   # 'global' | 'local_smoothed' | 'local_perpoint'
+  ceiling_cell_size_m: 0.1       # local-ceiling grid cell (smaller = finer lips)
+  ceiling_min_pts_per_cell: 5    # sparse cells fall back to the global ceiling
+  ceiling_smooth_cells: 3        # median window, 'local_smoothed' only
 
+# ============================== rasterisation =============================================
+raster:
+  pixel_m: 0.03                  # m/px — the grid resolution EVERY stage shares
+  min_points_per_cell: 3
+  thicken_px: 1
+
+# ============================== geometric method: watershed ===============================
+watershed:
+  min_wall_area_px: 60
+  marker_h_m: 0.30               # h-maxima seed depth
+  footprint_close_m: 1.00        # explicit-exterior closing distance
+  merge_ridge_m: 0.70            # merge basins joined wider than this
+  min_room_area_m2: 1.0          # the paper's A threshold — watershed's own value
+                                 # (SAM-auto faithfully uses 1.5; see sam_auto section)
+
+# ------ void rejection (a room must sit over scanned data) ------
+void_rejection:
+  drop_empty_rooms: true
+  coverage_ceiling_margin_m: 0.30
+  coverage_min_pts: 1
+  coverage_close_px: 2
+  min_coverage_frac: 0.25        # watershed's own void rule (SAM-auto uses 0.5; eval uses 0.25)
+                                 # GOTCHA: structural-only clouds (no interior points) need 0.0
+
+# ============================== SAM backend (shared by refinement + sam-auto) =============
+sam_backend:
+  sam_backend: sam2              # 'sam2' | 'sam3' | 'sam1'
+  sam_arch: vit_h                # SAM1 architecture key (only used when sam_backend='sam1')
+  sam_ckpt: /content/sam2.1_hiera_large.pt          # Colab checkpoint path (runtime; the
+  sam_model_cfg: configs/sam2.1/sam2.1_hiera_l.yaml #   install cell may override at runtime)
+
+# ============================== geometric+SAM method: prompted refinement =================
+sam_refinement:
+  use_sam_recall: true           # master switch for the refinement stage
+  sam_image_mode: stack          # GLOBAL default: 'stack' (occ+wall+coverage channels).
+                                 #   Pure-SAM needs 'occupancy' — declared in methods.sam_auto.
+  sam_pos_points: 8              # positive points sampled from the room's eroded interior
+  sam_use_neg_points: true       # also feed negative points from neighbouring rooms
+  sam_neg_points: 4
+  sam_conf_thresh: 0.88          # SAM is "confident" if predicted-IoU >= this
+  sam_wall_frac_max: 0.20        # edge is geometry-WEAK only below this wall fraction
+  sam_open_ridge_m: 0.40         # ...and its free interface has an open ridge >= this wide
+  sam_merge_cover_frac: 0.60     # mask "spans" an edge if covering >= this of BOTH interiors
+  sam_split_min_frac: 0.25       # split piece must be >= this fraction of the room
+  sam_min_sanity_margin: -0.02   # safety rail on the cheap sanity score
+  sam_refine_qa_cloud: false     # load the cloud in the refinement NB only for optional QA
+
+# ============================== SAM method: automatic "segment everything" ================
+sam_auto:
+  sam_points_per_side: 15        # paper Table 1 'points_': 11 (CS1) / 15 (CS2) / 30 (CS3)
+  sam_pred_iou_thresh: 0.85      # paper 'iou_'
+  sam_stability_score_thresh: 0.95   # paper 'stability_'
+  sam_crop_n_layers: 1           # paper 'n_layers'
+  sam_crop_n_points_downscale_factor: 2  # paper 'down_factor'
+  sam_min_mask_region_area: 100  # paper 'min_mask' (px)
+  sam_auto_min_room_area_m2: 1.5 # paper 'A' = 1.5 m^2 — INTENTIONALLY differs from the
+                                 #   watershed's 1.0 (each method keeps its paper-faithful value)
+  sam_auto_min_coverage_frac: 0.5  # keep a mask only if >= this frac sits on coverage
+  sam_auto_buffer_rooms: false   # paper 'do' boundary buffer; off = walls stay hard -1
+  sam_reprocess_residual: false  # paper §4.2 corridor reprocessing (two-pass); off = clean 1-pass
+  sam_residual_points_per_side: 5    # paper points_=5 on the residual
+
+# ============================== 3-D wall export / boundary-ring assignment ================
 walls:
-  room_erode_m: 0.05            # boundary-ring erosion radius (= ring thickness)
-  wall_dilate_m: 0.1            # how far the ring reaches out to grab wall pixels
+  do_buffer_m: 0.1               # boundary buffer (~half wall thickness)
+  wall_floor_margin_m: 0.10      # drop points within this of the floor
+  wall_ceiling_margin_m: 0.10    # drop points within this of the ceiling
+  room_erode_m: 0.1              # ring erosion radius (= ring thickness); null = auto-derive
+  wall_dilate_m: 0.15            # how far the ring reaches out to grab wall pixels; null = auto
 
-sam:
-  use_sam_recall: true
-  sam_backend: sam2
+# ------ per-room wall fit (RANSAC) ------
+ransac:
+  ransac_dist_thresh_m: 0.02
+  ransac_normal_tol_deg: 10.0
+  ransac_min_inliers: 400
+  ransac_max_planes: 20
 
+# ============================== evaluation (harmonized 3-method comparison) ===============
+evaluation:
+  eval_profile: comparison       # 'comparison' = ONE shared filter for all methods before the
+                                 #   pixel-IoU/PQ metrics; 'paper' = each method keeps its own.
+                                 #   The point-based paper-protocol headline is always faithful.
+  eval_min_room_area_m2: 1.0     # one area threshold applied to every method (comparison)
+  eval_min_coverage_frac: 0.25   # one void rule applied to every method (comparison)
+
+# ============================== postprocessing: wall segmentation =========================
 wall_segmentation:
   normal_radius_m: 0.10
+  normal_max_nn: 30
   normal_tol_deg: 15.0
   wseg_angle_tol_deg: 10.0
   offset_tol_m: 0.20
   min_wall_points: 200
   flat_pixel_m: 0.04
+  flat_min_pts_per_cell: 1
+  morph_close_px: 5
+  morph_open_px: 3
+  density_filter_radius: 0
+  density_filter_threshold: 2
+  sor_neighbours: 20
+  sor_std_ratio: 2.0
 
+# ============================== postprocessing: door/window detection =====================
+# NOTE: wproc_sam_* is a SECOND, unrelated SAM model (small vit_b on flattened wall images)
+# — not the sam2.1_hiera_large used for room segmentation above. Do not conflate them.
 wall_processing:
+  wproc_sam_checkpoint: sam_vit_b_01ec64.pth
+  wproc_sam_model_type: vit_b
+  wproc_sam_upscale: 4
+  wproc_sam_points_per_void: 5
   min_void_px: 40
   min_rectangularity: 0.55
   door_min_width_m: 0.50
   door_max_width_m: 1.80
   door_min_height_m: 1.80
   door_max_height_m: 2.80
+  door_floor_margin_px: 3
+  door_max_wall_width_frac: 0.85
+  window_min_width_m: 0.30
+  window_max_width_m: 2.50
+  window_min_height_m: 0.30
+  window_max_height_m: 2.00
+  window_min_sill_m: 0.30
 
+# ============================== postprocessing: IFC4 export ===============================
 ifc:
   ifc_min_directions: 2
   ifc_min_wall_length_m: 0.3
+  ifc_max_wall_length_m: 15.0
+  ifc_min_wall_aspect_ratio: 0.15
+  ifc_max_wall_thickness_m: 0.40
+  ifc_min_wall_fill_ratio: 0.15
   ifc_default_thickness: 0.15
+  ifc_exterior_thickness: 0.30
+  ifc_max_merge_thickness: 0.45
+  ifc_dedup_offset_tol: 0.45
+  ifc_snap_tolerance_m: 0.15
   ifc_project_name: Scanned Building
+  ifc_floor_elevation: 0.0
+  ifc_add_floor_slabs: true
+  ifc_slab_thickness: 0.2
 
+# ============================== bSDD enrichment (optional) ================================
 bsdd:
   bsdd_enrich: true
-  bsdd_server_path: "/Users/jacksonmatsumura/Documents/ONESTRUCTION-Point-Cloud-to-BIM/bSDD-mcp/build/index.js"  
+  bsdd_server_path: "/Users/jacksonmatsumura/Documents/ONESTRUCTION-Point-Cloud-to-BIM/bSDD-mcp/build/index.js"
   bsdd_add_psets: true
   bsdd_add_qtos: true
   bsdd_add_classifications: true
   bsdd_validate_geometry: true
 
-evaluation:                      # harmonized 3-method comparison (research-fixes Task 05)
-  eval_profile: comparison       # 'comparison' = apply ONE shared filter to all methods before
-                                 #   the pixel-IoU / PQ metrics (fair head-to-head); 'paper' =
-                                 #   pass labels through (each method keeps its own filtering).
-                                 #   The point-based paper-protocol headline is always faithful.
-  eval_min_room_area_m2: 1.0     # one area threshold applied to every method (comparison profile)
-  eval_min_coverage_frac: 0.25   # one void rule (interior coverage frac) applied to every method
-                                 # The canonical wall scaffold = cleaned slab-occupancy wall_mask
-                                 # (scan2bim.eval_wall_scaffold), shared by GT + all predictions.
+# ===========================================================================================
+# Per-method overrides — DECLARED here, selected by notebooks via load_config(method='...').
+# Only fields that legitimately differ per method belong in a block; everything else comes
+# from the global sections above. A notebook must never write `CFG.x = ...` for these.
+# ===========================================================================================
+methods:
+  geometric: {}                  # methods/geometric/notebook_1 — pure watershed, no overrides
+
+  sam_auto:                      # methods/SAM/notebook_1 — pure automatic SAM (paper §3.1)
+    sam_image_mode: occupancy    # SAM must see Ms only (binary slab occupancy, walls black).
+                                 #   The global 'stack' folds in coverage, which fills room
+                                 #   interiors and makes SAM grab the whole building as one blob.
+
+  sam_refine:                    # methods/geometric_SAM/notebook_2 — prompted refinement
+    sam_image_mode: stack        # explicit for clarity (== global default)
+    use_sam_recall: true         # explicit for clarity (== global default)
