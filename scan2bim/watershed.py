@@ -1,12 +1,4 @@
-"""Pass 1 — deterministic distance-transform watershed (section 6), ported verbatim.
-
-No algorithmic change: this is the same high-precision segmenter, only relocated into
-the package so Notebook 3 is a thin driver and Notebooks 2/4 can consume its labels.
-Label convention: ``-1`` wall · ``0`` exterior · ``>=1`` rooms.
-
-``supervision`` is imported lazily inside ``labels_to_detections`` so the core watershed
-runs with no optional deps.
-"""
+"""Distance-transform watershed room segmentation."""
 
 from __future__ import annotations
 

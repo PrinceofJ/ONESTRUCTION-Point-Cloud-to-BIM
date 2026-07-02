@@ -1,4 +1,4 @@
-"""Wall image processing: door and window detection via SAM + heuristics."""
+"""Wall image processing: door and window detection."""
 
 from __future__ import annotations
 
@@ -11,40 +11,43 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .config import WallProcConfig
-
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Step 1: Find candidate voids via connected components
-# ---------------------------------------------------------------------------
-
-def find_void_components(wall_img, min_void_px=15):
+def find_void_components(wall_img, min_void_px=15, void_open_px=3):
     void_mask = (wall_img == 255).astype(np.uint8)
-    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(void_mask, connectivity=8)
+    if void_open_px > 0:
+        k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * void_open_px + 1, 2 * void_open_px + 1))
+        eroded = cv2.morphologyEx(void_mask, cv2.MORPH_OPEN, k)
+        n_labels, seed_labels, stats, centroids = cv2.connectedComponentsWithStats(
+            eroded, connectivity=8)
+        labels = np.zeros_like(seed_labels)
+        for i in range(1, n_labels):
+            seed = (seed_labels == i).astype(np.uint8)
+            grown = cv2.dilate(seed, k, iterations=2)
+            labels[(grown > 0) & (void_mask > 0) & (labels == 0)] = i
+    else:
+        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            void_mask, connectivity=8)
 
     components = []
     for i in range(1, n_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
+        mask = labels == i
+        area = int(mask.sum())
         if area < min_void_px:
             continue
-        mask = labels == i
-        x = stats[i, cv2.CC_STAT_LEFT]
-        y = stats[i, cv2.CC_STAT_TOP]
-        w = stats[i, cv2.CC_STAT_WIDTH]
-        h = stats[i, cv2.CC_STAT_HEIGHT]
-        cx, cy = centroids[i]
+        ys, xs = np.where(mask)
+        x, y = int(xs.min()), int(ys.min())
+        w = int(xs.max() - x + 1)
+        h = int(ys.max() - y + 1)
+        cx, cy = float(xs.mean()), float(ys.mean())
         components.append({
             "mask": mask, "area": area,
             "bbox": (x, y, w, h), "centroid": (cx, cy),
         })
     return components
 
-
-# ---------------------------------------------------------------------------
-# Step 2: SAM refinement
-# ---------------------------------------------------------------------------
 
 def _sample_points_in_mask(mask, n_points=5, rng=None):
     if rng is None:
@@ -67,13 +70,11 @@ def prepare_sam_image(wall_img, upscale=4):
 def refine_void_with_sam(predictor, component, upscale=4, n_points=5):
     mask = component["mask"]
     orig_h, orig_w = mask.shape
-
     pts_orig = _sample_points_in_mask(mask, n_points=n_points)
     if len(pts_orig) == 0:
         return mask, 0.0
     pts_up = pts_orig * upscale + upscale // 2
     labels = np.ones(len(pts_up), dtype=np.int32)
-
     cx, cy = component["centroid"]
     neg_candidates = []
     for dy, dx in [(-5, 0), (5, 0), (0, -5), (0, 5)]:
@@ -84,51 +85,40 @@ def refine_void_with_sam(predictor, component, upscale=4, n_points=5):
         neg_pt = np.array([neg_candidates[0]]) * upscale + upscale // 2
         pts_up = np.vstack([pts_up, neg_pt])
         labels = np.append(labels, 0)
-
     masks, scores, _ = predictor.predict(
-        point_coords=pts_up, point_labels=labels, multimask_output=True,
-    )
+        point_coords=pts_up, point_labels=labels, multimask_output=True)
     best_idx = np.argmax(scores)
     sam_mask_up = masks[best_idx]
     score = float(scores[best_idx])
-
     sam_mask_down = cv2.resize(
         sam_mask_up.astype(np.uint8), (orig_w, orig_h),
-        interpolation=cv2.INTER_NEAREST,
-    ).astype(bool)
+        interpolation=cv2.INTER_NEAREST).astype(bool)
     return sam_mask_down, score
 
 
-def build_sam_predictor(cfg: WallProcConfig):
-    """Build a SAM predictor. Requires torch + segment_anything."""
+def build_sam_predictor(cfg):
     import torch
     from segment_anything import sam_model_registry, SamPredictor
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("SAM device: %s", device)
-    sam = sam_model_registry[cfg.sam_model_type](checkpoint=cfg.sam_checkpoint)
+    sam = sam_model_registry[cfg.wproc_sam_model_type](
+        checkpoint=cfg.wproc_sam_checkpoint)
     sam.to(device)
     return SamPredictor(sam)
 
-
-# ---------------------------------------------------------------------------
-# Step 3: Merge nearby fragments
-# ---------------------------------------------------------------------------
 
 def _bbox_overlap_or_close(b1, b2, margin=3):
     x1, y1, w1, h1 = b1
     x2, y2, w2, h2 = b2
     return not (
         x1 + w1 + margin < x2 or x2 + w2 + margin < x1
-        or y1 + h1 + margin < y2 or y2 + h2 + margin < y1
-    )
+        or y1 + h1 + margin < y2 or y2 + h2 + margin < y1)
 
 
 def merge_fragments(refined_components, merge_margin_px=3):
     n = len(refined_components)
     if n == 0:
         return []
-
     parent = list(range(n))
 
     def find(x):
@@ -169,22 +159,17 @@ def merge_fragments(refined_components, merge_margin_px=3):
     return merged
 
 
-# ---------------------------------------------------------------------------
-# Step 4: Classify openings
-# ---------------------------------------------------------------------------
-
-def classify_openings(merged_openings, img_height, cfg: WallProcConfig):
+def classify_openings(merged_openings, img_height, cfg):
+    pixel_m = cfg.flat_pixel_m
     results = []
     for opening in merged_openings:
         x, y, w_px, h_px = opening["bbox"]
-        w_m = w_px * cfg.pixel_m
-        h_m = h_px * cfg.pixel_m
-
+        w_m = w_px * pixel_m
+        h_m = h_px * pixel_m
         bbox_bottom_row = y + h_px - 1
         floor_row = img_height - 1
         touches_floor = (floor_row - bbox_bottom_row) <= cfg.door_floor_margin_px
-        sill_m = (floor_row - bbox_bottom_row) * cfg.pixel_m
-
+        sill_m = (floor_row - bbox_bottom_row) * pixel_m
         bbox_area = w_px * h_px
         rectangularity = opening["area"] / bbox_area if bbox_area > 0 else 0.0
 
@@ -208,44 +193,31 @@ def classify_openings(merged_openings, img_height, cfg: WallProcConfig):
             reason = f"unclassified: floor={touches_floor}, size={w_m:.2f}x{h_m:.2f}m"
 
         results.append({
-            **opening,
-            "label": label, "reason": reason,
+            **opening, "label": label, "reason": reason,
             "width_m": w_m, "height_m": h_m, "sill_m": sill_m,
             "touches_floor": touches_floor, "rectangularity": rectangularity,
         })
     return results
 
 
-# ---------------------------------------------------------------------------
-# Full pipeline for one wall image
-# ---------------------------------------------------------------------------
-
-def process_wall_image(img_path, predictor, cfg: WallProcConfig):
-    """Process a single wall image end-to-end.
-
-    Returns (openings_list, wall_img_array).
-    If predictor is None, SAM refinement is skipped.
-    """
-    wall_img = np.array(Image.open(img_path).convert("L"))
+def process_wall_array(wall_img, predictor, cfg):
     img_h, img_w = wall_img.shape
-
     components = find_void_components(wall_img, min_void_px=cfg.min_void_px)
     if not components:
         return [], wall_img
 
     if predictor is not None:
-        rgb_up = prepare_sam_image(wall_img, upscale=cfg.sam_upscale)
+        rgb_up = prepare_sam_image(wall_img, upscale=cfg.wproc_sam_upscale)
         predictor.set_image(rgb_up)
 
     refined = []
     for comp in components:
         if predictor is not None:
             sam_mask, score = refine_void_with_sam(
-                predictor, comp, upscale=cfg.sam_upscale, n_points=cfg.sam_points_per_void,
-            )
+                predictor, comp, upscale=cfg.wproc_sam_upscale,
+                n_points=cfg.wproc_sam_points_per_void)
         else:
             sam_mask, score = comp["mask"], 1.0
-
         ys, xs = np.where(sam_mask)
         if len(ys) == 0:
             continue
@@ -264,12 +236,12 @@ def process_wall_image(img_path, predictor, cfg: WallProcConfig):
     return openings, wall_img
 
 
-# ---------------------------------------------------------------------------
-# Export helpers
-# ---------------------------------------------------------------------------
+def process_wall_image(img_path, predictor, cfg):
+    wall_img = np.array(Image.open(img_path).convert("L"))
+    return process_wall_array(wall_img, predictor, cfg)
+
 
 def save_annotated_image(wall_img, openings, out_path, pixel_m=0.04):
-    h, w = wall_img.shape
     rgb = cv2.cvtColor(wall_img, cv2.COLOR_GRAY2BGR)
     color_map = {"door": (255, 150, 50), "window": (0, 200, 255), "unknown": (180, 180, 180)}
     for op in openings:
@@ -296,18 +268,7 @@ def opening_to_dict(op):
     }
 
 
-# ---------------------------------------------------------------------------
-# High-level driver
-# ---------------------------------------------------------------------------
-
-def run_wall_image_processing(
-    wall_image_dir: str, cfg: WallProcConfig, out_dir: str,
-    use_sam: bool = True,
-):
-    """Process all wall images, detect doors and windows.
-
-    Returns dict mapping room_name -> list of wall summaries.
-    """
+def run_wall_image_processing(wall_image_dir, cfg, out_dir, use_sam=True):
     os.makedirs(out_dir, exist_ok=True)
 
     predictor = None
@@ -331,7 +292,6 @@ def run_wall_image_processing(
         room_wall_map = {os.path.basename(wall_image_dir): all_pngs}
 
     all_summaries = {}
-
     for room_name, wall_paths in sorted(room_wall_map.items()):
         logger.info("  %s: %d walls", room_name, len(wall_paths))
         room_out = os.path.join(out_dir, room_name)
@@ -344,11 +304,10 @@ def run_wall_image_processing(
                 openings, wall_img = process_wall_image(wp, predictor, cfg)
                 n_doors = sum(1 for o in openings if o["label"] == "door")
                 n_windows = sum(1 for o in openings if o["label"] == "window")
-                logger.info("    %s: %d openings (%dD, %dW)", wall_name, len(openings), n_doors, n_windows)
-
+                logger.info("    %s: %d openings (%dD, %dW)",
+                            wall_name, len(openings), n_doors, n_windows)
                 ann_path = os.path.join(room_out, f"{wall_name}_annotated.png")
-                save_annotated_image(wall_img, openings, ann_path, cfg.pixel_m)
-
+                save_annotated_image(wall_img, openings, ann_path, cfg.flat_pixel_m)
                 room_summary.append({
                     "wall": wall_name,
                     "openings": [opening_to_dict(o) for o in openings],
@@ -357,7 +316,6 @@ def run_wall_image_processing(
                 logger.error("    %s: ERROR %s", wall_name, e)
 
         all_summaries[room_name] = room_summary
-
         json_path = os.path.join(room_out, "openings.json")
         with open(json_path, "w") as f:
             json.dump(room_summary, f, indent=2)
@@ -368,13 +326,10 @@ def run_wall_image_processing(
 
     total_doors = sum(
         sum(1 for o in entry.get("openings", []) if o["label"] == "door")
-        for room in all_summaries.values()
-        for entry in room
-    )
+        for room in all_summaries.values() for entry in room)
     total_windows = sum(
         sum(1 for o in entry.get("openings", []) if o["label"] == "window")
-        for room in all_summaries.values()
-        for entry in room
-    )
-    logger.info("Total: %d doors, %d windows across %d rooms", total_doors, total_windows, len(all_summaries))
+        for room in all_summaries.values() for entry in room)
+    logger.info("Total: %d doors, %d windows across %d rooms",
+                total_doors, total_windows, len(all_summaries))
     return all_summaries

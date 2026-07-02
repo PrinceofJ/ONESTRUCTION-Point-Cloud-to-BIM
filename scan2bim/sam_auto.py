@@ -1,29 +1,4 @@
-"""Method 2 — pure-SAM automatic room segmentation (Albadri et al., ISPRS 2025).
-
-This is the project's *third arm*: where the **geometric** method seeds rooms with a
-deterministic watershed and **geometric+SAM** refines that watershed with PROMPTED SAM,
-this method runs SAM in automatic **"segment everything"** mode directly on the Stage-1
-rasters — **no watershed prior, no prompts** — and turns the resulting masks into room
-labels. It reproduces the paper's room pipeline (§3.1):
-
-    occupancy image  ->  SamAutomaticMaskGenerator  ->  masks
-                     ->  room / not-room by cross-sectional area (A = 1.5 m^2)
-                     ->  (optional) outward boundary buffer (do = 1/2 wall thickness)
-                     ->  (optional) corridor reprocessing on the residual free space.
-
-Design mirrors ``sam_refine`` exactly: the ONE non-deterministic, GPU-bound step (SAM's
-automatic mask generation) is isolated behind a thin :class:`AutoMaskGenerator` adapter,
-and EVERYTHING else is a pure function over plain arrays. The orchestrator
-(:func:`segment_rooms_sam_auto`) accepts an injected ``generator``, so tests pass a *fake*
-generator returning hand-built masks — no torch, no checkpoint, no CUDA.
-
-``AutoMaskGenerator`` is distinct from ``sam_refine.MaskGenerator``: this one takes NO
-prompts (``generate(image) -> list[dict]``); that one is a prompted ``set_image`` +
-``predict`` segmenter. The two never mix.
-
-Label convention is identical to the watershed everywhere: ``-1`` wall · ``0`` exterior ·
-``>=1`` rooms. No room pixel is ever placed on a wall.
-"""
+"""Pure-SAM automatic room segmentation."""
 
 from __future__ import annotations
 
@@ -35,17 +10,8 @@ from .watershed import _relabel_rooms
 from .sam_refine import build_sam_image
 
 
-# ===========================================================================
-# model abstraction — the ONLY GPU / non-deterministic piece (mockable)
-# ===========================================================================
 class AutoMaskGenerator:
-    """Automatic 'segment everything' segmenter: ``generate(image) -> list[dict]``.
-
-    Each returned record follows SAM's standard automatic-mask schema, of which this
-    pipeline uses ``segmentation`` (bool HxW), ``predicted_iou`` (float) and ``area`` (px).
-    Distinct from ``sam_refine.MaskGenerator`` (a *prompted* segmenter) — this one takes
-    NO prompts, exactly like the paper's ``SamAutomaticMaskGenerator``.
-    """
+    """Automatic segment-everything interface: generate(image) -> list[dict]."""
 
     name = 'sam-auto'
 
@@ -54,9 +20,7 @@ class AutoMaskGenerator:
 
 
 class _AutoAdapter(AutoMaskGenerator):
-    """Wraps any backend's automatic mask generator (SAM1 ``SamAutomaticMaskGenerator`` /
-    SAM2 ``SAM2AutomaticMaskGenerator``), both of which expose ``.generate(rgb)`` returning
-    the standard list-of-dict record. One adapter therefore covers every backend."""
+    """Wraps SAM1/SAM2/SAM3 automatic mask generators."""
 
     def __init__(self, generator, name='sam-auto'):
         self._g = generator
@@ -67,8 +31,7 @@ class _AutoAdapter(AutoMaskGenerator):
 
 
 def _amg_kwargs(cfg):
-    """Map the paper's Table-1 parameters onto the backend's automatic-mask-generator
-    kwargs (identical names across SAM1 / SAM2)."""
+    """Table-1 AMG kwargs."""
     return dict(
         points_per_side=int(cfg.sam_points_per_side),
         pred_iou_thresh=float(cfg.sam_pred_iou_thresh),
@@ -87,8 +50,7 @@ def _build_auto_sam1(cfg, device):
 
 
 def _build_auto_sam2(cfg, device):
-    """SAM2 automatic generator. Verified against github.com/facebookresearch/sam2:
-    ``build_sam2(config_file, ckpt_path, device=...)`` + ``SAM2AutomaticMaskGenerator``."""
+    """SAM2 automatic generator."""
     from sam2.build_sam import build_sam2
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
     model = build_sam2(cfg.sam_model_cfg, cfg.sam_ckpt, device=device)
@@ -96,8 +58,7 @@ def _build_auto_sam2(cfg, device):
 
 
 def _build_auto_sam3(cfg, device):
-    """TEMPORARY SAM3 adapter — mirrors ``sam_refine._build_sam3``. Targets the same
-    automatic-generator shape SAM2 exposes; adapt the two imports to your SAM3 build."""
+    """SAM3 automatic generator (experimental)."""
     from sam3.build_sam import build_sam3                              # adapt to your build
     from sam3.automatic_mask_generator import SAM3AutomaticMaskGenerator  # adapt to your build
     model = build_sam3(cfg.sam_model_cfg, cfg.sam_ckpt, device=device)
@@ -108,9 +69,7 @@ _AUTO_BUILDERS = {'sam1': _build_auto_sam1, 'sam2': _build_auto_sam2, 'sam3': _b
 
 
 def build_auto_mask_generator(cfg) -> AutoMaskGenerator:
-    """Factory. ``cfg.sam_backend`` selects 'sam2' (default) | 'sam3' | 'sam1'. Returns an
-    automatic ``AutoMaskGenerator`` configured with the paper's Table-1 params. Raises if
-    the requested backend cannot be built (no torch / checkpoint)."""
+    """Build the automatic AutoMaskGenerator for cfg.sam_backend."""
     import torch
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     backend = getattr(cfg, 'sam_backend', 'sam2')
@@ -123,9 +82,6 @@ def build_auto_mask_generator(cfg) -> AutoMaskGenerator:
     return gen
 
 
-# ===========================================================================
-# small morphology helpers (kept local so this module stands alone)
-# ===========================================================================
 def _dilate(mask, px):
     if px <= 0:
         return np.asarray(mask, bool)
@@ -133,27 +89,8 @@ def _dilate(mask, px):
     return cv2.dilate(np.asarray(mask, np.uint8), k).astype(bool)
 
 
-# ===========================================================================
-# deterministic core (fully unit-testable, NO model)
-# ===========================================================================
 def masks_to_room_labels(masks, scores, walls, coverage, cfg):
-    """SAM's mask set -> int32 room labels on the ``walls`` grid.
-
-    ``masks`` / ``scores``: parallel lists of bool HxW masks and their predicted-IoU
-    scores (plain arrays, so this is testable with hand-built fixtures). Steps:
-
-      * restrict every mask to free space (``& ~walls``) — no room pixel on a wall;
-      * drop masks below ``cfg.sam_min_mask_region_area`` px (raw-mask noise floor);
-      * drop masks sitting mostly OFF ``coverage`` (exterior / unscanned void), i.e. the
-        big background mask SAM always produces;
-      * resolve overlaps deterministically: paint the BEST mask LAST so it wins contested
-        pixels. "Best" = higher ``predicted_iou``, ties by larger area, then lower input
-        index. The painting order — and therefore the result — is independent of the order
-        the generator returned the masks;
-      * re-impose ``-1`` on every wall pixel, ``0`` on exterior, and compact ids to 1..k.
-
-    Returns ``(labels, debug)``.
-    """
+    """Convert SAM masks to int32 room labels. Returns (labels, debug)."""
     walls = np.asarray(walls, bool)
     H, W = walls.shape
     cov = None if coverage is None else np.asarray(coverage, bool)
@@ -188,9 +125,7 @@ def masks_to_room_labels(masks, scores, walls, coverage, cfg):
 
 
 def classify_rooms_by_area(labels, cfg):
-    """Paper room / not-room step: relabel-to-0 any region whose cross-sectional area is
-    below ``cfg.sam_auto_min_room_area_m2`` (the paper's ``A``). Pure; returns compacted
-    labels (walls / exterior untouched)."""
+    """Drop rooms below the minimum area threshold."""
     labels = np.asarray(labels)
     min_px = int(round(cfg.sam_auto_min_room_area_m2 / (cfg.pixel_m ** 2)))
     out = labels.copy()
@@ -201,14 +136,7 @@ def classify_rooms_by_area(labels, cfg):
 
 
 def buffer_room_labels(labels, walls, cfg, buffer_px=None):
-    """Paper boundary buffer (``do`` = 1/2 wall thickness): expand each room outward to
-    reclaim adjacent free pixels WITHOUT crossing a wall or bleeding into another room.
-
-    Pure morphological op on the label raster. Only currently-exterior (``0``, non-wall)
-    pixels within ``buffer_px`` of a room are claimed; walls stay ``-1``; ties (a pixel
-    reachable from two rooms) go to the geodesically nearest room (walls are barriers), so
-    the result is order-independent. ``buffer_px`` defaults to ``cfg.do_buffer_px``.
-    """
+    """Expand rooms outward into unclaimed free space, respecting walls."""
     labels = np.asarray(labels).astype(np.int32)
     walls = np.asarray(walls, bool)
     px = cfg.do_buffer_px if buffer_px is None else int(buffer_px)
@@ -233,14 +161,7 @@ def buffer_room_labels(labels, walls, cfg, buffer_px=None):
 
 
 def reprocess_residual(labels, image, walls, coverage, cfg, generator):
-    """Paper corridor reprocessing (§4.2): re-run ``generator`` on the residual free space
-    (pixels no room claimed) and merge newly-qualifying rooms in.
-
-    The SAM image is masked to the residual so the generator only sees the leftover space;
-    new masks are turned into rooms by the same deterministic core + area gate, then
-    appended with fresh ids after the current maximum. Deterministic given the generator's
-    masks. Returns ``(labels, debug)``.
-    """
+    """Re-run generator on residual free space and merge new rooms in."""
     labels = np.asarray(labels).astype(np.int32)
     walls = np.asarray(walls, bool)
     residual = (labels == 0) & ~walls                    # unclaimed free space (corridors)
@@ -268,9 +189,6 @@ def reprocess_residual(labels, image, walls, coverage, cfg, generator):
     return _relabel_rooms(out), dict(ran=True, n_added=added)
 
 
-# ===========================================================================
-# orchestrator — pure-SAM segmentation (mirrors refine_with_sam)
-# ===========================================================================
 def segment_rooms_sam_auto(image, walls, coverage, cfg,
                            generator=None, residual_generator=None):
     """Pure-SAM room segmentation. Returns ``(labels, debug)``.

@@ -21,11 +21,11 @@ artifacts    : structured save/load + ZIP packaging + shared filename constants
 """
 
 from . import config, io_utils, slab, raster, watershed, walls, sam_refine, sam_auto, viz, artifacts
+from . import wall_seg, wall_proc, ifc_export, bsdd_enrich
 from . import runconfig
 from . import eval
 from .config import Config
 
-# convenience re-exports (most-used names)
 from .runconfig import (project_root, load_config,
                         assert_upstream_config, assert_points_in_grid)
 from .io_utils import load_point_cloud
@@ -44,13 +44,21 @@ from .sam_auto import (AutoMaskGenerator, build_auto_mask_generator,
                        segment_rooms_sam_auto, masks_to_room_labels,
                        classify_rooms_by_area, buffer_room_labels, reprocess_residual)
 from .eval import (STRUCTURAL_CLUTTER_CLASSES, annotation_class,
-                   load_room_interior_points, build_gt_room_labels, load_gt_room_points,
-                   overlap_stats, score_rooms, point_room_overlap, score_rooms_paper,
-                   eval_wall_scaffold, harmonize_room_labels, load_method_labels)
+                   load_room_interior_points, build_gt_room_labels,
+                   overlap_stats, score_rooms, load_method_labels)
+from .wall_seg import (segment_walls, flatten_wall, save_wall_images,
+                       run_wall_segmentation)
+from .wall_proc import (find_void_components, merge_fragments, classify_openings,
+                        process_wall_array, process_wall_image,
+                        run_wall_image_processing)
+from .ifc_export import (build_building_json, build_ifc, compute_wall_geometry,
+                         compute_room_boundaries)
+from .bsdd_enrich import enrich_ifc, BsddMcpClient, EnrichmentReport
 
 __all__ = [
     'config', 'io_utils', 'slab', 'raster', 'watershed', 'walls', 'sam_refine', 'sam_auto',
-    'viz', 'artifacts', 'runconfig', 'eval', 'Config',
+    'viz', 'artifacts', 'runconfig', 'eval', 'wall_seg', 'wall_proc', 'ifc_export',
+    'bsdd_enrich', 'Config',
     'project_root', 'load_config', 'assert_upstream_config', 'assert_points_in_grid',
     'load_point_cloud', 'estimate_ceiling', 'estimate_local_ceilings', 'crop_vertical',
     'rasterize_topdown', 'rasterize_coverage', 'point_cells',
@@ -65,9 +73,12 @@ __all__ = [
     'masks_to_room_labels', 'classify_rooms_by_area', 'buffer_room_labels',
     'reprocess_residual',
     'STRUCTURAL_CLUTTER_CLASSES', 'annotation_class', 'load_room_interior_points',
-    'build_gt_room_labels', 'load_gt_room_points', 'overlap_stats', 'score_rooms',
-    'point_room_overlap', 'score_rooms_paper',
-    'eval_wall_scaffold', 'harmonize_room_labels', 'load_method_labels',
+    'build_gt_room_labels', 'overlap_stats', 'score_rooms', 'load_method_labels',
+    'segment_walls', 'flatten_wall', 'save_wall_images', 'run_wall_segmentation',
+    'find_void_components', 'merge_fragments', 'classify_openings',
+    'process_wall_array', 'process_wall_image', 'run_wall_image_processing',
+    'build_building_json', 'build_ifc', 'compute_wall_geometry', 'compute_room_boundaries',
+    'enrich_ifc', 'BsddMcpClient', 'EnrichmentReport',
 ]
 
 __version__ = '1.0.0'

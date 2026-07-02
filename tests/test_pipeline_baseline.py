@@ -22,7 +22,7 @@ from scan2bim import Config
 from tests._synth import write_synthetic_xyz
 
 # Baseline recorded on the fixed synthetic cloud (seed 0). Room count is exact; wall-point
-# totals are allowed a small tolerance for cross-platform open3d/voxel rounding — an actual
+# totals are allowed a small tolerance for cross-platform open3d/voxel rounding  - an actual
 # algorithm change would move these by far more than the tolerance.
 BASELINE_ROOMS = 2
 BASELINE_WALL_POINTS = {1: 41508, 2: 41316}

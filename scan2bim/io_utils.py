@@ -1,8 +1,4 @@
-"""Point-cloud IO. Ported verbatim from the original notebook's section 2.
-
-``open3d`` is imported lazily so the rest of the package (rasters, watershed) can be
-imported in environments without open3d installed.
-"""
+"""Point-cloud IO."""
 
 from __future__ import annotations
 
@@ -10,13 +6,7 @@ import numpy as np
 
 
 def load_point_cloud(cfg):
-    """Read the cloud, convert to METRES once, voxel-downsample.
-
-    Returns (pcd, points) where ``pcd`` is the open3d point cloud and ``points`` is the
-    Nx3 float array of its coordinates. Deterministic for a given file + voxel size, so
-    re-loading in a downstream notebook reproduces exactly the same points (and therefore
-    the same raster transform).
-    """
+    """Load, unit-convert, and voxel-downsample the point cloud."""
     import open3d as o3d
     pcd = o3d.io.read_point_cloud(cfg.file_path)
     raw = np.asarray(pcd.points)

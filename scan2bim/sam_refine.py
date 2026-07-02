@@ -47,17 +47,8 @@ from .watershed import _relabel_rooms
 from .walls import estimate_wall_thickness_px, resolve_ring_radii_px
 
 
-# ===========================================================================
-# model abstraction — adapters wrap a backend's PROMPTED image predictor
-# ===========================================================================
 class MaskGenerator:
-    """Interface every backend adapter implements — a *prompted* segmenter.
-
-    ``set_image(image)`` embeds one HxWx3 uint8 RGB image; ``predict(...)`` returns the
-    candidate masks (+ their predicted-IoU scores) for a set of point/box prompts. This is
-    the ONLY surface the refinement code depends on, so swapping SAM2 -> SAM3 -> SAM1 is a
-    one-adapter change.
-    """
+    """Prompted segmenter interface: set_image + predict."""
 
     name = 'sam'
 
@@ -70,11 +61,7 @@ class MaskGenerator:
 
 
 class _PromptPredictorAdapter(MaskGenerator):
-    """Adapter over any object exposing the standard SAM image-predictor API
-    (``set_image(rgb)`` + ``predict(point_coords=, point_labels=, box=, multimask_output=)``
-    returning ``(masks CxHxW, iou_predictions, low_res_logits)``). SAM2's
-    ``SAM2ImagePredictor`` and SAM1's ``SamPredictor`` both match this shape, so one adapter
-    covers both."""
+    """Wraps SAM1/SAM2/SAM3 image predictors behind a common interface."""
 
     def __init__(self, predictor, name='sam'):
         self._p = predictor
@@ -93,8 +80,7 @@ class _PromptPredictorAdapter(MaskGenerator):
 
 
 def _build_sam2(cfg, device):
-    """SAM2 prompted predictor. Verified against github.com/facebookresearch/sam2:
-    ``build_sam2(config_file, ckpt_path, device=...)`` + ``SAM2ImagePredictor``."""
+    """SAM2 prompted predictor."""
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
     model = build_sam2(cfg.sam_model_cfg, cfg.sam_ckpt, device=device)
@@ -102,17 +88,14 @@ def _build_sam2(cfg, device):
 
 
 def _build_sam1(cfg, device):
-    """Original Segment-Anything prompted predictor (``SamPredictor``)."""
+    """SAM1 prompted predictor."""
     from segment_anything import sam_model_registry, SamPredictor
     sam = sam_model_registry[cfg.sam_arch](checkpoint=cfg.sam_ckpt).to(device)
     return _PromptPredictorAdapter(SamPredictor(sam), name='sam1')
 
 
 def _build_sam3(cfg, device):
-    """TEMPORARY SAM3 adapter. SAM3's package/entry-points are not yet stable, so this
-    targets the same image-predictor shape SAM2 exposes (SAM3 also supports text/concept
-    prompts, which this spatial pipeline does not need). Adapt the two imports below to your
-    SAM3 build; nothing else in the pipeline changes."""
+    """SAM3 prompted predictor (experimental)."""
     from sam3.build_sam import build_sam3                          # adapt to your build
     from sam3.sam3_image_predictor import SAM3ImagePredictor       # adapt to your build
     model = build_sam3(cfg.sam_model_cfg, cfg.sam_ckpt, device=device)
@@ -123,8 +106,7 @@ _BUILDERS = {'sam1': _build_sam1, 'sam2': _build_sam2, 'sam3': _build_sam3}
 
 
 def build_mask_generator(cfg):
-    """Factory. ``cfg.sam_backend`` selects 'sam2' (default) | 'sam3' | 'sam1'. Returns a
-    prompted ``MaskGenerator``. Raises if the requested backend cannot be built."""
+    """Build the prompted MaskGenerator for cfg.sam_backend."""
     import torch
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     backend = getattr(cfg, 'sam_backend', 'sam2')
@@ -160,9 +142,6 @@ def build_sam_image(occ, wall_mask=None, coverage=None, mode='stack'):
     return np.stack([free, wn, cv], -1).astype(np.uint8)
 
 
-# ===========================================================================
-# prompting helpers (deterministic — no random sampling anywhere)
-# ===========================================================================
 def _erode(mask, px):
     if px <= 0:
         return np.asarray(mask, bool)
@@ -178,9 +157,7 @@ def _dilate(mask, px):
 
 
 def sample_interior_points(mask, k):
-    """Deterministically pick up to ``k`` (x, y) points inside ``mask``: the distance-
-    transform peak (most-interior point) first, then evenly spaced picks in raster order.
-    No randomness, so prompts are reproducible run to run."""
+    """Pick up to k interior points deterministically."""
     mask = np.asarray(mask, bool)
     ys, xs = np.where(mask)
     n = len(xs)
@@ -197,8 +174,7 @@ def sample_interior_points(mask, k):
 
 
 def room_prompts(labels, r, cfg, erode_px):
-    """Build (point_coords, point_labels, box) for watershed room ``r``: positive points
-    from the eroded interior, optional negatives from neighbouring rooms, and the room box."""
+    """Build SAM prompts for watershed room r."""
     M = (labels == r)
     interior = _erode(M, erode_px)
     if not interior.any():
@@ -226,9 +202,7 @@ def room_prompts(labels, r, cfg, erode_px):
     return point_coords, point_labels, box
 
 
-# ===========================================================================
 # geometry evidence on the watershed scaffold (reuses walls + DT)
-# ===========================================================================
 def region_adjacency(labels, adj_px):
     """Unordered pairs of room ids whose masks come within ``adj_px`` of each other (so
     wall-separated neighbours are detected too, in order to be *rejected* as wall-backed)."""
@@ -302,9 +276,7 @@ def split_room_on_dt(region, seed_a, seed_b, dt, erode_px=1):
     return part_a, part_b
 
 
-# ===========================================================================
 # single-pass region-adjacency-graph relabel (the testable core, model-free)
-# ===========================================================================
 def relabel_by_sam(labels, walls, dt, sam_room_masks, sam_room_scores, cfg, coverage=None):
     """Resolve the whole region-adjacency graph ONCE from per-room SAM masks + scores.
 
@@ -428,9 +400,6 @@ def relabel_by_sam(labels, walls, dt, sam_room_masks, sam_room_scores, cfg, cove
     return out, dbg
 
 
-# ===========================================================================
-# orchestrator — prompted refinement, with watershed pass-through fallback
-# ===========================================================================
 def refine_with_sam(geom_labels, occ_gray, walls, footprint, cfg,
                     generator=None, wall_mask=None, coverage=None, dt=None):
     """Refine watershed labels with prompted SAM. Returns ``(labels, debug)``.

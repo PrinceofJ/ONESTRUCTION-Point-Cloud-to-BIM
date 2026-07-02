@@ -1,10 +1,10 @@
 """Unit tests for the room-segmentation GT builder + paper IoU (``scan2bim.eval``).
 
-All hand-built — no pipeline data, no torch, no randomness. Two groups:
+All hand-built  - no pipeline data, no torch, no randomness. Two groups:
 
   GT builder  : a tiny S3DIS-shaped folder tree (per-class Annotations) on a known grid,
                 asserting the structural + clutter classes are dropped from the room area.
-  Scoring     : hand-built label maps for the cases the task names — identical masks score
+  Scoring     : hand-built label maps for the cases the task names  - identical masks score
                 IoU 1.0, a known over-seg case yields over_seg=1, an under-seg case yields
                 under_seg=1, a missed room drags the mean down, and the shared wall scaffold
                 excludes the same pixels from both sides.
