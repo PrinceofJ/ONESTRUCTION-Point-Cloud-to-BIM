@@ -184,6 +184,76 @@ class Config:
     eval_min_coverage_frac: float = 0.25   # one void rule for all methods (interior coverage frac)
 
     # =====================================================================
+    # NEW — postprocessing: wall segmentation (Notebook postprocessing/1)
+    # =====================================================================
+    # Segments individual vertical wall planes from each room's assigned wall points and
+    # flattens them to per-wall images for the door/window pass below.
+    normal_radius_m: float = 0.10
+    normal_max_nn: int = 30
+    normal_tol_deg: float = 15.0
+    wseg_angle_tol_deg: float = 10.0
+    offset_tol_m: float = 0.20
+    min_wall_points: int = 200
+    flat_pixel_m: float = 0.04
+    flat_min_pts_per_cell: int = 1
+    morph_close_px: int = 5
+    morph_open_px: int = 3
+    density_filter_radius: int = 0
+    density_filter_threshold: int = 2
+    sor_neighbours: int = 20
+    sor_std_ratio: float = 2.0
+
+    # =====================================================================
+    # NEW — postprocessing: wall image processing / door + window detection (NB postprocessing/2)
+    # =====================================================================
+    wproc_sam_checkpoint: str = 'sam_vit_b_01ec64.pth'
+    wproc_sam_model_type: str = 'vit_b'
+    wproc_sam_upscale: int = 4
+    wproc_sam_points_per_void: int = 5
+    min_void_px: int = 40
+    min_rectangularity: float = 0.55
+    door_min_width_m: float = 0.50
+    door_max_width_m: float = 1.80
+    door_min_height_m: float = 1.80
+    door_max_height_m: float = 2.80
+    door_floor_margin_px: int = 3
+    door_max_wall_width_frac: float = 0.85
+    window_min_width_m: float = 0.30
+    window_max_width_m: float = 2.50
+    window_min_height_m: float = 0.30
+    window_max_height_m: float = 2.00
+    window_min_sill_m: float = 0.30
+
+    # =====================================================================
+    # NEW — postprocessing: IFC4 export (Notebook postprocessing/3)
+    # =====================================================================
+    ifc_min_directions: int = 2
+    ifc_min_wall_length_m: float = 0.3
+    ifc_max_wall_length_m: float = 15.0
+    ifc_min_wall_aspect_ratio: float = 0.15
+    ifc_max_wall_thickness_m: float = 0.40
+    ifc_min_wall_fill_ratio: float = 0.15
+    ifc_default_thickness: float = 0.15
+    ifc_exterior_thickness: float = 0.30
+    ifc_max_merge_thickness: float = 0.45
+    ifc_dedup_offset_tol: float = 0.45
+    ifc_snap_tolerance_m: float = 0.15
+    ifc_project_name: str = 'Scanned Building'
+    ifc_floor_elevation: float = 0.0
+    ifc_add_floor_slabs: bool = True
+    ifc_slab_thickness: float = 0.2
+
+    # =====================================================================
+    # NEW — bSDD enrichment (optional; enriches the exported IFC via the bSDD MCP)
+    # =====================================================================
+    bsdd_enrich: bool = False
+    bsdd_server_path: str = ''
+    bsdd_add_psets: bool = True
+    bsdd_add_qtos: bool = True
+    bsdd_add_classifications: bool = True
+    bsdd_validate_geometry: bool = True
+
+    # =====================================================================
     # NEW — structured outputs / staging
     # =====================================================================
     out_root: str = 'scan2bim_out'  # NEW: base output dir; local relative path (set via os.path.join(PROJECT_ROOT, ...) in notebooks)

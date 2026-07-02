@@ -28,7 +28,7 @@ logger = logging.getLogger("pipeline")
 
 
 def stage_1_occupancy(CFG, A):
-    """Rasterize point cloud to 2D occupancy, wallness, coverage."""
+    """Rasterize point cloud to 2D occupancy, wall mask, coverage."""
     import scan2bim
 
     logger.info("=== Stage 1: Occupancy rasterization ===")
@@ -41,13 +41,11 @@ def stage_1_occupancy(CFG, A):
         slab_pts, CFG.pixel_m, up_axis=CFG.up_axis,
         min_points_per_cell=CFG.min_points_per_cell, thicken=CFG.thicken_px)
     wall_mask = (occ == 0)
-    wallness = scan2bim.rasterize_wallness(pts, CFG, tf)
     coverage = scan2bim.rasterize_coverage(pts, CFG, tf)
 
     out_dir = A.ensure_dir(A.stage_dir(CFG.out_root, A.STAGE1))
     A.save_png(os.path.join(out_dir, A.OCC_PNG), occ)
     A.save_npy(os.path.join(out_dir, A.WALLMASK_NPY), wall_mask)
-    A.save_npy(os.path.join(out_dir, A.WALLNESS_NPY), wallness)
     A.save_npy(os.path.join(out_dir, A.COVERAGE_NPY), coverage)
     A.save_transform(os.path.join(out_dir, A.TRANSFORM_JSON), tf,
                      extra=dict(floor_z=floor_z, ceil_z=ceil_z,
@@ -68,14 +66,11 @@ def stage_2_watershed(CFG, A):
     scan2bim.assert_upstream_config(CFG, A.load_stage_config(s1))
 
     wall_mask = A.load_npy(os.path.join(s1, A.WALLMASK_NPY)).astype(bool)
-    wallness = A.load_npy(os.path.join(s1, A.WALLNESS_NPY)).astype(bool)
     coverage = A.load_npy(os.path.join(s1, A.COVERAGE_NPY)).astype(bool)
     tf = A.load_transform(os.path.join(s1, A.TRANSFORM_JSON))
 
-    seg_input = wallness if CFG.use_wallness else wall_mask
-
     labels, aux = scan2bim.segment_rooms_watershed(
-        seg_input, CFG.pixel_m,
+        wall_mask, CFG.pixel_m,
         marker_h_m=CFG.marker_h_m,
         footprint_close_m=CFG.footprint_close_m,
         merge_ridge_m=CFG.merge_ridge_m,
@@ -111,7 +106,7 @@ def stage_3_sam_refine(CFG, A):
     scan2bim.assert_upstream_config(CFG, A.load_stage_config(s2))
 
     occ = np.array(Image.open(os.path.join(s1, A.OCC_PNG)))
-    wallness = A.load_npy(os.path.join(s1, A.WALLNESS_NPY)).astype(bool)
+    wall_mask = A.load_npy(os.path.join(s1, A.WALLMASK_NPY)).astype(bool)
     coverage = A.load_npy(os.path.join(s1, A.COVERAGE_NPY)).astype(bool)
     geom_labels = A.load_npy(os.path.join(s2, A.ROOM_LABELS_NPY)).astype("int32")
     walls = A.load_npy(os.path.join(s2, A.WATERSHED_WALLS_NPY)).astype(bool)
@@ -120,7 +115,7 @@ def stage_3_sam_refine(CFG, A):
 
     refined, dbg = scan2bim.refine_with_sam(
         geom_labels, occ, walls, footprint, CFG,
-        wallness=wallness, coverage=coverage)
+        wall_mask=wall_mask, coverage=coverage)
     logger.info("SAM refinement: %s", dbg)
 
     out_dir = A.ensure_dir(A.stage_dir(CFG.out_root, A.STAGE4))
@@ -143,7 +138,7 @@ def stage_4_wall_assignment(CFG, A):
     scan2bim.assert_upstream_config(CFG, A.load_stage_config(s1))
     scan2bim.assert_upstream_config(CFG, A.load_stage_config(s4))
 
-    wallness = A.load_npy(os.path.join(s1, A.WALLNESS_NPY)).astype(bool)
+    wall_mask = A.load_npy(os.path.join(s1, A.WALLMASK_NPY)).astype(bool)
     tf = A.load_transform(os.path.join(s1, A.TRANSFORM_JSON))
     labels = A.load_npy(os.path.join(s4, A.REFINED_LABELS_NPY)).astype("int32")
 
@@ -151,7 +146,7 @@ def stage_4_wall_assignment(CFG, A):
     scan2bim.assert_points_in_grid(pts, tf)
 
     wall_masks, dbg = scan2bim.room_wall_masks_boundary_ring(
-        labels, wallness, CFG, return_debug=True)
+        labels, wall_mask, CFG, return_debug=True)
     band, floor_z, ceil_z = scan2bim.height_band_mask(pts, CFG, tf)
     rooms3d = scan2bim.backproject_room_masks(pts, wall_masks, tf, keep_mask=band)
 
@@ -182,7 +177,7 @@ def stage_4_wall_assignment_no_sam(CFG, A):
     s2 = A.load_stage_dir(CFG.out_root, A.STAGE2)
     scan2bim.assert_upstream_config(CFG, A.load_stage_config(s1))
 
-    wallness = A.load_npy(os.path.join(s1, A.WALLNESS_NPY)).astype(bool)
+    wall_mask = A.load_npy(os.path.join(s1, A.WALLMASK_NPY)).astype(bool)
     tf = A.load_transform(os.path.join(s1, A.TRANSFORM_JSON))
     labels = A.load_npy(os.path.join(s2, A.ROOM_LABELS_NPY)).astype("int32")
 
@@ -190,7 +185,7 @@ def stage_4_wall_assignment_no_sam(CFG, A):
     scan2bim.assert_points_in_grid(pts, tf)
 
     wall_masks, dbg = scan2bim.room_wall_masks_boundary_ring(
-        labels, wallness, CFG, return_debug=True)
+        labels, wall_mask, CFG, return_debug=True)
     band, floor_z, ceil_z = scan2bim.height_band_mask(pts, CFG, tf)
     rooms3d = scan2bim.backproject_room_masks(pts, wall_masks, tf, keep_mask=band)
 

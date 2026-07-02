@@ -44,8 +44,9 @@ from .sam_auto import (AutoMaskGenerator, build_auto_mask_generator,
                        segment_rooms_sam_auto, masks_to_room_labels,
                        classify_rooms_by_area, buffer_room_labels, reprocess_residual)
 from .eval import (STRUCTURAL_CLUTTER_CLASSES, annotation_class,
-                   load_room_interior_points, build_gt_room_labels,
-                   overlap_stats, score_rooms, load_method_labels)
+                   load_room_interior_points, build_gt_room_labels, load_gt_room_points,
+                   overlap_stats, score_rooms, score_rooms_paper, load_method_labels,
+                   eval_wall_scaffold, harmonize_room_labels)
 from .wall_seg import (segment_walls, flatten_wall, save_wall_images,
                        run_wall_segmentation)
 from .wall_proc import (find_void_components, merge_fragments, classify_openings,
@@ -73,7 +74,8 @@ __all__ = [
     'masks_to_room_labels', 'classify_rooms_by_area', 'buffer_room_labels',
     'reprocess_residual',
     'STRUCTURAL_CLUTTER_CLASSES', 'annotation_class', 'load_room_interior_points',
-    'build_gt_room_labels', 'overlap_stats', 'score_rooms', 'load_method_labels',
+    'build_gt_room_labels', 'load_gt_room_points', 'overlap_stats', 'score_rooms',
+    'score_rooms_paper', 'load_method_labels', 'eval_wall_scaffold', 'harmonize_room_labels',
     'segment_walls', 'flatten_wall', 'save_wall_images', 'run_wall_segmentation',
     'find_void_components', 'merge_fragments', 'classify_openings',
     'process_wall_array', 'process_wall_image', 'run_wall_image_processing',

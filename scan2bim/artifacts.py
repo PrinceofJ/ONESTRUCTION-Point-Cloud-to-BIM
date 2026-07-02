@@ -33,6 +33,11 @@ STAGE5 = 'stage5_walls_sam_refined'   # N3 re-run on SAM-refined masks (Option B
 STAGE_SAM_AUTO = 'stage_sam_auto'
 STAGE_SAM_WALLS = 'stage_sam_walls'
 
+# ---- postprocessing stage names (wall seg -> door/window -> IFC export) ----
+STAGE_WALL_SEG = 'stage_wall_seg'      # per-room wall-plane segmentation + flattened images
+STAGE_WALL_PROC = 'stage_wall_proc'    # door/window detection on the wall images
+STAGE_IFC = 'stage_ifc'                # building.json + IFC4 model export
+
 # ---- canonical artifact filenames ----
 TRANSFORM_JSON = 'transform.json'      # grid transform + floor/ceil + provenance
 CONFIG_JSON = 'config.json'            # full Config snapshot
@@ -52,6 +57,9 @@ WALL_ASSIGN_PNG = 'wall_assignment.png'
 
 REFINED_LABELS_NPY = 'room_labels_refined.npy'
 REFINED_LABELS_PNG = 'room_labels_refined_color.png'
+
+BUILDING_JSON = 'building.json'        # postprocessing: structured walls/openings/rooms
+IFC_MODEL = 'model.ifc'                # postprocessing: exported IFC4 model
 
 
 # ---------------------------------------------------------------------------
