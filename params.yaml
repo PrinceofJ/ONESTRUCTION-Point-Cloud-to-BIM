@@ -37,11 +37,11 @@
 # ============================================================================
 
 input:
-  file_path: data/area3.xyz      # the real-life scan to SEGMENT (full cloud); pairs with gt_dir below
+  file_path: data\area1.xyz     # the real-life scan to SEGMENT (full cloud); pairs with gt_dir below
   units_per_meter: 1.0           # raw units per metre (1.0 if already in metres)
 
 groundtruth:
-  gt_dir: data/Area_3            # ground-truth model dir (per-room <room>/<room>.txt); same frame as the scan
+  gt_dir: data/Area_1            # ground-truth model dir (per-room <room>/<room>.txt); same frame as the scan
 
 output:
   out_root: scan2bim_out         # all stage folders + ZIPs land here
@@ -56,13 +56,23 @@ watershed:
                                  # points and would otherwise lose every room — see header note.)
 
 slab:
-  slab_lo_m: 0.1                 # shallower wall-height band edge (closer to ceiling)
-  slab_hi_m: 0.2                 # deeper band edge
+  slab_lo_m: 0.2                 # shallower wall-height band edge (closer to ceiling)
+  slab_hi_m: 0.4                 # deeper band edge
 
 walls:
-  room_erode_m: 0.125            # boundary-ring erosion radius (= ring thickness)
-  wall_dilate_m: 0.15            # how far the ring reaches out to grab wall pixels
+  room_erode_m: 0.1            # boundary-ring erosion radius (= ring thickness)
+  wall_dilate_m: 0.2            # how far the ring reaches out to grab wall pixels
 
 sam:
   use_sam_recall: true           # master switch for the Notebook 4 SAM refinement
   sam_backend: sam2              # 'sam2' (default) | 'sam3' | 'sam1'
+
+evaluation:                      # harmonized 3-method comparison (research-fixes Task 05)
+  eval_profile: comparison       # 'comparison' = apply ONE shared filter to all methods before
+                                 #   the pixel-IoU / PQ metrics (fair head-to-head); 'paper' =
+                                 #   pass labels through (each method keeps its own filtering).
+                                 #   The point-based paper-protocol headline is always faithful.
+  eval_min_room_area_m2: 1.0     # one area threshold applied to every method (comparison profile)
+  eval_min_coverage_frac: 0.25   # one void rule (interior coverage frac) applied to every method
+                                 # The canonical wall scaffold = cleaned slab-occupancy wall_mask
+                                 # (scan2bim.eval_wall_scaffold), shared by GT + all predictions.

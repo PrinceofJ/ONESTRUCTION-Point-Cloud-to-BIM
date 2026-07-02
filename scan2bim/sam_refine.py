@@ -31,7 +31,7 @@ the watershed labels unchanged whenever SAM is disabled or no real model is avai
 never fabricates masks.
 
 SAM input image (``build_sam_image``): the three rasters Notebook 1 already computed are
-stacked as channels — occupancy (free space) / wallness (structure) / coverage (scanned
+stacked as channels — occupancy (free space) / slab wall mask (structure) / coverage (scanned
 data). This is a realistic top-down for SAM and needs no point cloud in this stage. The
 colourised label map is for human QA only and is never fed to SAM.
 """
@@ -139,23 +139,23 @@ def build_mask_generator(cfg):
 # ===========================================================================
 # SAM input image — stack the already-computed N1 rasters as channels
 # ===========================================================================
-def build_sam_image(occ, wallness=None, coverage=None, mode='stack'):
+def build_sam_image(occ, wall_mask=None, coverage=None, mode='stack'):
     """Build the HxWx3 uint8 image fed to SAM from data already computed in Notebook 1.
 
-    Channels (``mode='stack'``): 0 = occupancy free space (255 free / 0 wall) · 1 = wallness
-    (structure / barriers) · 2 = coverage (where the scan actually has data). This gives SAM
-    a realistic top-down — walls read as boundaries, scanned rooms as filled regions — using
-    only N1 artifacts (no point cloud needed here). ``mode='occupancy'`` (or missing
-    wallness/coverage) falls back to replicating the binary occupancy raster into 3 channels.
+    Channels (``mode='stack'``): 0 = occupancy free space (255 free / 0 wall) · 1 = slab wall
+    mask (structure / barriers) · 2 = coverage (where the scan actually has data). This gives
+    SAM a realistic top-down — walls read as boundaries, scanned rooms as filled regions —
+    using only N1 artifacts (no point cloud needed here). ``mode='occupancy'`` (or missing
+    wall_mask/coverage) falls back to replicating the binary occupancy raster into 3 channels.
     The colourised label map is NEVER used as SAM input.
     """
     occ = np.asarray(occ)
     if occ.ndim == 3:
         occ = occ[..., 0]
     free = (occ >= 128).astype(np.uint8) * 255          # occupancy.png: 255 free, 0 wall
-    if mode == 'occupancy' or wallness is None or coverage is None:
+    if mode == 'occupancy' or wall_mask is None or coverage is None:
         return np.stack([free, free, free], -1).astype(np.uint8)
-    wn = np.asarray(wallness, bool).astype(np.uint8) * 255
+    wn = np.asarray(wall_mask, bool).astype(np.uint8) * 255
     cv = np.asarray(coverage, bool).astype(np.uint8) * 255
     return np.stack([free, wn, cv], -1).astype(np.uint8)
 
@@ -432,7 +432,7 @@ def relabel_by_sam(labels, walls, dt, sam_room_masks, sam_room_scores, cfg, cove
 # orchestrator — prompted refinement, with watershed pass-through fallback
 # ===========================================================================
 def refine_with_sam(geom_labels, occ_gray, walls, footprint, cfg,
-                    generator=None, wallness=None, coverage=None, dt=None):
+                    generator=None, wall_mask=None, coverage=None, dt=None):
     """Refine watershed labels with prompted SAM. Returns ``(labels, debug)``.
 
     Pass-through (``debug['ran']=False``, no masks fabricated) when ``cfg.use_sam_recall``
@@ -459,7 +459,7 @@ def refine_with_sam(geom_labels, occ_gray, walls, footprint, cfg,
 
     if dt is None:
         dt = cv2.distanceTransform((~walls).astype(np.uint8), cv2.DIST_L2, 5)
-    image = build_sam_image(occ_gray, wallness, coverage,
+    image = build_sam_image(occ_gray, wall_mask, coverage,
                             mode=getattr(cfg, 'sam_image_mode', 'stack'))
     generator.set_image(image)
 

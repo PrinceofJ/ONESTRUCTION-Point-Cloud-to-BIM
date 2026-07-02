@@ -45,9 +45,6 @@ class Config:
     pixel_m: float = 0.03                  # the memory dial (m / px)
     min_points_per_cell: int = 3
     thicken_px: int = 1
-    use_wallness: bool = False             # vertical-extent raster vs binary presence (segmentation input)
-    wallness_min_span_frac: float = 0.5    # column counts as wall if it spans >= this
-                                           #   fraction of the floor->ceiling height
 
     # ---- room seg: PASS 1 (deterministic watershed) ----
     min_wall_area_px: int = 60
@@ -93,13 +90,12 @@ class Config:
     #   room_erode_m  -> erosion radius used to obtain the reliable interior I_i.
     #                    Also equals the thickness of the boundary ring B_i = M_i \ I_i.
     #   wall_dilate_m -> r_w, how far the ring is dilated outward to capture wall
-    #                    pixels from the wallness raster.
+    #                    pixels from the slab wall mask.
     # Set either to ``None`` to auto-derive it from the estimated wall thickness
     # (the same distance-transform median heuristic the original used in
     # ``room_footprints``); see walls.estimate_wall_thickness_px / resolve_ring_radii_px.
     room_erode_m: float | None = 0.125      # NEW: erosion radius -> reliable interior (ring thickness)
     wall_dilate_m: float | None = 0.15     # NEW: r_w -> outward reach to grab wall pixels
-    wall_source: str = 'wallness'          # NEW: 'wallness' (spec) | 'occupancy' (legacy compatibility)
 
     # =====================================================================
     # NEW — SAM backend abstraction (Notebook 4)
@@ -111,9 +107,9 @@ class Config:
     sam_backend: str = 'sam2'              # 'sam2' (default) | 'sam3' | 'sam1'
 
     # ---- prompting (per watershed room) ----
-    sam_image_mode: str = 'stack'          # SAM input image: 'stack' = occupancy+wallness+
-                                           #   coverage as 3 channels; 'occupancy' = replicate
-                                           #   the binary occupancy raster into 3 channels.
+    sam_image_mode: str = 'stack'          # SAM input image: 'stack' = occupancy + slab wall
+                                           #   mask + coverage as 3 channels; 'occupancy' =
+                                           #   replicate the binary occupancy raster into 3 channels.
     sam_pos_points: int = 8                # positive points sampled from the room's eroded interior
     sam_use_neg_points: bool = True        # also feed negative points from neighbouring rooms
     sam_neg_points: int = 4                # how many negative points (per room) when enabled
@@ -169,6 +165,23 @@ class Config:
     # single-pass baseline is clean; enable for the paper-faithful two-pass result.
     sam_reprocess_residual: bool = False
     sam_residual_points_per_side: int = 5       # paper points_=5 on the residual
+
+    # =====================================================================
+    # NEW — harmonized evaluation (research-fixes Task 05)
+    # =====================================================================
+    # The three methods drop rooms with different area/void rules and (historically) used
+    # different wall masks, so a raw head-to-head partly measures the post-filter, not the
+    # segmenter. ``harmonize_room_labels`` applies ONE area threshold + ONE void rule + the ONE
+    # shared wall scaffold to every method's labels before any metric.
+    #   eval_profile == 'comparison' : apply the harmonized filter (eval_* values below) to all.
+    #   eval_profile == 'paper'      : skip harmonization; each method keeps its own standalone
+    #                                  values (min_room_area_m2 / sam_auto_min_room_area_m2, …).
+    # The canonical wall scaffold is the cleaned slab-occupancy wall mask (deterministic,
+    # method-agnostic) — the same scaffold the room metric (Task 02) and wall metric (Task 04)
+    # reference; see eval.eval_wall_scaffold.
+    eval_profile: str = 'comparison'       # 'comparison' (harmonized) | 'paper' (faithful)
+    eval_min_room_area_m2: float = 1.0     # one area threshold for all methods (m^2)
+    eval_min_coverage_frac: float = 0.25   # one void rule for all methods (interior coverage frac)
 
     # =====================================================================
     # NEW — structured outputs / staging

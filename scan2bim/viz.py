@@ -222,7 +222,7 @@ def show_wall_assignment(labels, wall_masks, debug=None, title='boundary-ring wa
     ring = np.zeros((H, W, 3)); ring[d['I']] = (0.6, 0.6, 0.6); ring[d['B']] = (1, 0.3, 0)
     ax[2].imshow(ring); ax[2].set_title('I_i (grey) + boundary B_i (orange)')
     wv = np.zeros((H, W, 3)); wv[d['Bd']] = (0.2, 0.4, 1.0); wv[d['W']] = (1, 0, 0)
-    ax[3].imshow(wv); ax[3].set_title('dilated ring (blue) ∩ wallness = walls (red)')
+    ax[3].imshow(wv); ax[3].set_title('dilated ring (blue) ∩ wall mask = walls (red)')
     for a in ax:
         a.axis('off')
     plt.tight_layout(); plt.show()

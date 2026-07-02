@@ -276,7 +276,7 @@ def segment_rooms_sam_auto(image, walls, coverage, cfg,
     """Pure-SAM room segmentation. Returns ``(labels, debug)``.
 
     ``image``: the HxWx3 SAM image (build it with ``scan2bim.build_sam_image``).
-    ``walls``: the wall scaffold (wallness raster) — re-imposed as hard ``-1`` barriers.
+    ``walls``: the wall scaffold (slab wall mask) — re-imposed as hard ``-1`` barriers.
     ``coverage``: scan-coverage raster (drops the exterior background mask); may be ``None``.
 
     If ``generator`` is None a real backend is built via ``build_auto_mask_generator(cfg)``;

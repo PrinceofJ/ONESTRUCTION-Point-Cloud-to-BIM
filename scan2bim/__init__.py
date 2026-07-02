@@ -11,7 +11,7 @@ Stage modules
 config       : Config dataclass (single source of truth)
 io_utils     : load_point_cloud
 slab         : ceiling estimation + vertical slab crop
-raster       : occupancy / wallness / coverage rasters + pixel<->world transforms
+raster       : occupancy / coverage rasters + pixel<->world transforms
 watershed    : Pass-1 deterministic watershed segmentation
 walls        : wall-mask cleanup + NEW boundary-ring wall assignment + back-projection
 sam_refine   : model-agnostic PROMPTED SAM refinement (graph relabel: merge / split)
@@ -30,7 +30,7 @@ from .runconfig import (project_root, load_config,
                         assert_upstream_config, assert_points_in_grid)
 from .io_utils import load_point_cloud
 from .slab import estimate_ceiling, estimate_local_ceilings, crop_vertical
-from .raster import (rasterize_topdown, rasterize_wallness, rasterize_coverage,
+from .raster import (rasterize_topdown, rasterize_coverage,
                      point_cells, label_points, grid_world_bbox,
                      interior_coverage_fraction)
 from .watershed import segment_rooms_watershed, labels_to_detections
@@ -44,15 +44,16 @@ from .sam_auto import (AutoMaskGenerator, build_auto_mask_generator,
                        segment_rooms_sam_auto, masks_to_room_labels,
                        classify_rooms_by_area, buffer_room_labels, reprocess_residual)
 from .eval import (STRUCTURAL_CLUTTER_CLASSES, annotation_class,
-                   load_room_interior_points, build_gt_room_labels,
-                   overlap_stats, score_rooms, load_method_labels)
+                   load_room_interior_points, build_gt_room_labels, load_gt_room_points,
+                   overlap_stats, score_rooms, point_room_overlap, score_rooms_paper,
+                   eval_wall_scaffold, harmonize_room_labels, load_method_labels)
 
 __all__ = [
     'config', 'io_utils', 'slab', 'raster', 'watershed', 'walls', 'sam_refine', 'sam_auto',
     'viz', 'artifacts', 'runconfig', 'eval', 'Config',
     'project_root', 'load_config', 'assert_upstream_config', 'assert_points_in_grid',
     'load_point_cloud', 'estimate_ceiling', 'estimate_local_ceilings', 'crop_vertical',
-    'rasterize_topdown', 'rasterize_wallness', 'rasterize_coverage', 'point_cells',
+    'rasterize_topdown', 'rasterize_coverage', 'point_cells',
     'label_points', 'grid_world_bbox', 'interior_coverage_fraction',
     'segment_rooms_watershed', 'labels_to_detections',
     'clean_wall_mask', 'seal_at_doors', 'room_wall_masks_boundary_ring',
@@ -64,7 +65,9 @@ __all__ = [
     'masks_to_room_labels', 'classify_rooms_by_area', 'buffer_room_labels',
     'reprocess_residual',
     'STRUCTURAL_CLUTTER_CLASSES', 'annotation_class', 'load_room_interior_points',
-    'build_gt_room_labels', 'overlap_stats', 'score_rooms', 'load_method_labels',
+    'build_gt_room_labels', 'load_gt_room_points', 'overlap_stats', 'score_rooms',
+    'point_room_overlap', 'score_rooms_paper',
+    'eval_wall_scaffold', 'harmonize_room_labels', 'load_method_labels',
 ]
 
 __version__ = '1.0.0'

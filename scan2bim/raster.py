@@ -45,29 +45,6 @@ def rasterize_topdown(sliced_points, pixel_size, up_axis=2,
     return occ, tf
 
 
-def rasterize_wallness(full_points, cfg, transform):
-    """Vertical-EXTENT raster from the FULL cloud, aligned to ``transform``'s grid.
-    Returns a bool wall mask: column is wall if its point span covers >=
-    wallness_min_span_frac of the floor->ceiling height."""
-    pts = np.asarray(full_points, np.float64)
-    up = cfg.up_axis
-    floor_z, ceil_z = estimate_ceiling(pts[:, up], return_floor=True)
-    room_h = max(1e-6, ceil_z - floor_z)
-    ax_a, ax_b, ps = transform['ax_a'], transform['ax_b'], transform['pixel_size']
-    H, W = transform['height'], transform['width']
-    a_px = ((pts[:, ax_a] - transform['a_min']) / ps).astype(np.int64)
-    b_px = ((pts[:, ax_b] - transform['b_min']) / ps).astype(np.int64)
-    inb = (a_px >= 0) & (a_px < W) & (b_px >= 0) & (b_px < H)
-    a_px, b_px, z = a_px[inb], b_px[inb], pts[inb, up]
-    flat = b_px * W + a_px
-    zmax = np.full(H * W, -np.inf); zmin = np.full(H * W, np.inf)
-    np.maximum.at(zmax, flat, z); np.minimum.at(zmin, flat, z)
-    span = (zmax - zmin).reshape(H, W)
-    span[~np.isfinite(span)] = 0.0
-    wall = span >= cfg.wallness_min_span_frac * room_h
-    return wall[::-1, :]                                       # match the row flip
-
-
 def rasterize_coverage(full_points, cfg, transform):
     """Bool map of where the scan actually HAS DATA below the ceiling, aligned to
     transform's grid. A cell is 'covered' if it holds >= coverage_min_pts such points.

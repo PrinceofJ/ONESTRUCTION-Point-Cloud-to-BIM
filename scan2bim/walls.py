@@ -10,8 +10,8 @@ Three groups of functions:
    factored out into ``backproject_room_masks`` so it is shared, not duplicated.
 3. **NEW boundary-ring wall assignment** (``room_wall_masks_boundary_ring``) — the
    replacement requested in the refactor. For each room it builds a boundary ring
-   ``B_i = M_i \\ erode(M_i)``, dilates it by ``r_w``, and keeps the **wallness** pixels
-   that fall inside. ``estimate_wall_thickness_px`` is the *existing* distance-transform
+   ``B_i = M_i \\ erode(M_i)``, dilates it by ``r_w``, and keeps the **slab wall-mask**
+   pixels that fall inside. ``estimate_wall_thickness_px`` is the *existing* distance-transform
    heuristic (originally inlined in ``room_footprints``) reused to auto-size the radii.
 """
 
@@ -180,21 +180,26 @@ def resolve_ring_radii_px(cfg, wall_mask_for_thickness):
     Honours ``cfg.room_erode_m`` and ``cfg.wall_dilate_m`` when set; if either is
     ``None`` it is auto-derived from the estimated wall thickness (the existing
     heuristic): erosion -> half a wall thickness, dilation r_w -> one wall thickness
-    plus the export buffer ``do_buffer_px``. Returns ints >= 1.
+    plus the export buffer ``do_buffer_px``.
+
+    An *explicit* ``0`` is honoured literally (no erosion / no dilation -> the
+    corresponding morphology step is skipped). The auto-derived path (param is
+    ``None``) still floors at 1 px so an unconfigured run keeps a usable ring.
+    Returns ints >= 0.
     """
     t = estimate_wall_thickness_px(wall_mask_for_thickness)
     if getattr(cfg, 'room_erode_m', None) is not None:
-        erode_px = int(round(cfg.room_erode_m / cfg.pixel_m))
+        erode_px = max(0, int(round(cfg.room_erode_m / cfg.pixel_m)))   # honour explicit 0
     else:
-        erode_px = t // 2
+        erode_px = max(1, t // 2)
     if getattr(cfg, 'wall_dilate_m', None) is not None:
-        dilate_px = int(round(cfg.wall_dilate_m / cfg.pixel_m))
+        dilate_px = max(0, int(round(cfg.wall_dilate_m / cfg.pixel_m)))  # honour explicit 0
     else:
-        dilate_px = t + cfg.do_buffer_px
-    return max(1, erode_px), max(1, dilate_px)
+        dilate_px = max(1, t + cfg.do_buffer_px)
+    return erode_px, dilate_px
 
 
-def room_wall_masks_boundary_ring(labels, wallness, cfg,
+def room_wall_masks_boundary_ring(labels, wall_mask, cfg,
                                   erode_px=None, dilate_px=None, return_debug=False):
     """NEW per-room wall-pixel assignment.
 
@@ -203,27 +208,31 @@ def room_wall_masks_boundary_ring(labels, wallness, cfg,
         2. I_i  = erode(M_i, erode_px)               # reliable interior
         3. B_i  = M_i \\ I_i                          # boundary ring
         4. B_i' = dilate(B_i, dilate_px)             # reach out by r_w
-        5. W_i  = B_i' & wallness                    # keep wallness pixels on the ring
+        5. W_i  = B_i' & wall_mask                   # keep wall pixels on the ring
 
-    Returns ``{room_id: bool wall-pixel mask}`` ready for back-projection. The wallness
-    raster (preserved unchanged from ``rasterize_wallness``) is the wall source, per spec.
+    Returns ``{room_id: bool wall-pixel mask}`` ready for back-projection. ``wall_mask`` is the
+    Stage-1 slab-occupancy wall raster (``wall_mask.npy``) — the deterministic wall source
+    shared across all methods (replaces the removed span-based wallness raster).
     """
-    wallness = np.asarray(wallness, bool)
-    re, rd = resolve_ring_radii_px(cfg, wallness)
+    wall_mask = np.asarray(wall_mask, bool)
+    re, rd = resolve_ring_radii_px(cfg, wall_mask)
     erode_px = re if erode_px is None else int(erode_px)
     dilate_px = rd if dilate_px is None else int(dilate_px)
-    erode_px = max(1, erode_px); dilate_px = max(1, dilate_px)
+    erode_px = max(0, erode_px); dilate_px = max(0, dilate_px)
 
-    ek = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erode_px + 1, 2 * erode_px + 1))
-    dk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate_px + 1, 2 * dilate_px + 1))
+    # px == 0 -> skip the morphology op entirely (identity), so the ring/reach is literal.
+    ek = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erode_px + 1, 2 * erode_px + 1))
+          if erode_px > 0 else None)
+    dk = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate_px + 1, 2 * dilate_px + 1))
+          if dilate_px > 0 else None)
 
     out, dbg = {}, {}
     for r in [int(x) for x in np.unique(labels) if x >= 1]:
         M = (labels == r)
-        I = cv2.erode(M.astype(np.uint8), ek).astype(bool)     # reliable interior
+        I = cv2.erode(M.astype(np.uint8), ek).astype(bool) if ek is not None else M  # reliable interior
         B = M & ~I                                             # boundary ring B_i = M_i \ I_i
-        Bd = cv2.dilate(B.astype(np.uint8), dk).astype(bool)   # dilate by r_w
-        W = Bd & wallness                                      # wallness pixels on the ring
+        Bd = cv2.dilate(B.astype(np.uint8), dk).astype(bool) if dk is not None else B  # dilate by r_w
+        W = Bd & wall_mask                                     # wall pixels on the ring
         out[r] = W
         if return_debug:
             dbg[r] = dict(M=M, I=I, B=B, Bd=Bd, W=W)

@@ -2,10 +2,12 @@
 synthetic cloud and assert the room count + per-room wall-point totals stay within tolerance
 of a stored baseline.
 
-This is the gate that proves the *plumbing* refactor changed **no algorithm**: the refactor
-must not touch ``raster.py`` / ``watershed.py`` / ``walls.py``, so for a fixed input these
-numbers must not move. The baseline was recorded from the pipeline functions directly (the
-same calls the notebooks make) and the identical totals come out of the real notebook cells.
+This is the gate that proves the watershed + wall-assignment plumbing stays intact: for a
+fixed input the room count + per-room wall-point totals must not move. The wall source is the
+slab ``wall_mask`` (the span-based ``wallness`` raster was removed — research-fixes Task 03);
+on the clean full-height synthetic walls this yields the *same* back-projected totals as the
+old wallness source, so the recorded baseline is unchanged. The baseline was recorded from the
+pipeline functions directly (the same calls the notebooks make).
 """
 
 import os
@@ -35,18 +37,16 @@ def _run_local_pipeline(cfg):
         slab_pts, cfg.pixel_m, up_axis=cfg.up_axis,
         min_points_per_cell=cfg.min_points_per_cell, thicken=cfg.thicken_px)
     wall_mask = (occ == 0)
-    wallness = scan2bim.rasterize_wallness(pts, cfg, tf)
     coverage = scan2bim.rasterize_coverage(pts, cfg, tf)
 
-    seg_input = wallness if cfg.use_wallness else wall_mask
     labels = scan2bim.segment_rooms_watershed(
-        seg_input, cfg.pixel_m, marker_h_m=cfg.marker_h_m,
+        wall_mask, cfg.pixel_m, marker_h_m=cfg.marker_h_m,
         footprint_close_m=cfg.footprint_close_m, merge_ridge_m=cfg.merge_ridge_m,
         min_room_area_m2=cfg.min_room_area_m2, min_wall_area_px=cfg.min_wall_area_px,
         door_seal_px=cfg.seal_gap_px, coverage=coverage,
         min_coverage_frac=cfg.min_coverage_frac)
 
-    wall_masks = scan2bim.room_wall_masks_boundary_ring(labels, wallness, cfg)
+    wall_masks = scan2bim.room_wall_masks_boundary_ring(labels, wall_mask, cfg)
     band, _, _ = scan2bim.height_band_mask(pts, cfg, tf)
     rooms3d = scan2bim.backproject_room_masks(pts, wall_masks, tf, keep_mask=band)
     return labels, rooms3d

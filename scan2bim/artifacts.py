@@ -38,8 +38,8 @@ TRANSFORM_JSON = 'transform.json'      # grid transform + floor/ceil + provenanc
 CONFIG_JSON = 'config.json'            # full Config snapshot
 
 OCC_PNG = 'occupancy.png'              # binary occupancy image (0=wall, 255=free)
-WALLMASK_NPY = 'wall_mask.npy'         # bool: occupancy wall pixels (segmentation input)
-WALLNESS_NPY = 'wallness.npy'          # bool: vertical-extent wall raster (wall source)
+WALLMASK_NPY = 'wall_mask.npy'         # bool: slab-occupancy wall pixels (the wall source +
+                                       #   segmentation input + canonical eval scaffold)
 COVERAGE_NPY = 'coverage.npy'          # bool: scan-coverage raster (void rejection)
 
 ROOM_LABELS_NPY = 'room_labels.npy'    # int32: -1 wall, 0 exterior, >=1 rooms (watershed)

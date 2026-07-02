@@ -16,8 +16,9 @@ import numpy as np
 import pytest
 
 from scan2bim import (STRUCTURAL_CLUTTER_CLASSES, annotation_class,
-                      load_room_interior_points, build_gt_room_labels,
-                      overlap_stats, score_rooms)
+                      load_room_interior_points, build_gt_room_labels, load_gt_room_points,
+                      overlap_stats, score_rooms, score_rooms_paper, point_cells,
+                      eval_wall_scaffold, harmonize_room_labels, Config)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -212,3 +213,188 @@ def test_overlap_stats_intersection_and_areas():
     assert inter[0, 0] == 50 and inter[1, 1] == 50
     assert inter[0, 1] == 0 and inter[1, 0] == 0
     assert list(pred_area) == [50, 50] and list(gt_area) == [50, 50]
+
+
+# =========================================================================== paper protocol (02b)
+def _row_points(xs, y=1):
+    """Points on one raster row: with the identity transform, world (x, y) -> cell (H-1-y, x)."""
+    xs = np.asarray(xs, float)
+    return np.column_stack([xs, np.full(len(xs), float(y)), np.zeros(len(xs))])
+
+
+def _row_pred(H, W, label_cols, y_row_world=1):
+    """A label map with the given {label: [cols]} painted on the row world-y=1 sits on."""
+    lab = np.zeros((H, W), np.int32)
+    row = H - 1 - y_row_world
+    for lab_id, cols in label_cols.items():
+        lab[row, list(cols)] = lab_id
+    return lab
+
+
+def test_load_gt_room_points_ids_match_builder(tmp_path):
+    _make_room(str(tmp_path / 'room_a'), {'floor': [(1, 1), (2, 2)], 'wall': [(1, 8)]})
+    _make_room(str(tmp_path / 'room_b'), {'floor': [(7, 7)], 'clutter': [(7, 1)]})
+    pts, ids = load_gt_room_points(str(tmp_path))
+    # room_a -> id 1 (2 interior pts), room_b -> id 2 (1 interior pt); excluded classes dropped
+    assert len(pts) == 3
+    assert sorted(int(v) for v in np.unique(ids)) == [1, 2]
+    assert int((ids == 1).sum()) == 2 and int((ids == 2).sum()) == 1
+
+
+def test_paper_identity_all_matched_iou_one():
+    H, W = 3, 20
+    tf = _identity_transform(H, W)
+    pts = _row_points(list(range(0, 4)) + list(range(6, 10)))
+    ids = np.array([1, 1, 1, 1, 2, 2, 2, 2])
+    pred = _row_pred(H, W, {1: range(0, 4), 2: range(6, 10)})
+    r = score_rooms_paper(pts, ids, pred, tf)
+    assert r['mean_iou_matched'] == pytest.approx(1.0)
+    assert r['detection_rate'] == pytest.approx(1.0)
+    assert r['over_seg'] == 0 and r['under_seg'] == 0
+    assert r['n_gt'] == 2 and r['n_seg'] == 2 and r['n_matched'] == 2
+
+
+def test_paper_missed_room_excluded_from_mean_not_zeroed():
+    # The key difference vs score_rooms: a completely-missed GT room lowers detection_rate,
+    # it does NOT enter the mean as IoU 0.
+    H, W = 3, 20
+    tf = _identity_transform(H, W)
+    pts = _row_points(list(range(0, 4)) + list(range(6, 10)))
+    ids = np.array([1, 1, 1, 1, 2, 2, 2, 2])
+    pred = _row_pred(H, W, {1: range(0, 4)})        # room 2 not predicted at all
+    r = score_rooms_paper(pts, ids, pred, tf)
+    assert r['mean_iou_matched'] == pytest.approx(1.0)   # only the found room counts
+    assert r['detection_rate'] == pytest.approx(0.5)     # 1 of 2 GT rooms found
+    assert r['n_matched'] == 1
+    # contrast: the pixel scorer averages over both GT rooms -> ~0.5
+    pix = score_rooms(pred, _row_pred(H, W, {1: range(0, 4), 2: range(6, 10)}))
+    assert pix['mean_iou'] < r['mean_iou_matched']
+
+
+def test_paper_75pct_threshold_bites():
+    # One pred straddling two GT rooms partially: p and g both < 0.75 -> no match. Push past
+    # 0.75 and it matches. (A pred fully inside a GT room always has p=1, so non-match needs
+    # the pred to span two rooms — exactly what the OR rule is designed to catch.)
+    H, W = 3, 20
+    tf = _identity_transform(H, W)
+    pts = _row_points(list(range(0, 10)) + list(range(10, 20)))
+    ids = np.array([1] * 10 + [2] * 10)
+    # pred1 covers 6 of GT1 (cols 0-5) + 4 of GT2 (cols 10-13): p=g=0.6 for GT1 -> unmatched
+    no = score_rooms_paper(pts, ids, _row_pred(H, W, {1: list(range(0, 6)) + list(range(10, 14))}), tf)
+    assert no['n_matched'] == 0 and no['detection_rate'] == pytest.approx(0.0)
+    # pred1 covers 8 of GT1 (cols 0-7) + 2 of GT2 (cols 10-11): p(GT1)=8/10=0.8 -> matched
+    yes = score_rooms_paper(pts, ids, _row_pred(H, W, {1: list(range(0, 8)) + list(range(10, 12))}), tf)
+    g1 = [pr for pr in yes['per_room'] if pr['gt_id'] == 1][0]
+    assert g1['matched'] is True and yes['n_matched'] >= 1
+
+
+def test_paper_over_segmentation_counted_once():
+    H, W = 3, 20
+    tf = _identity_transform(H, W)
+    pts = _row_points(range(0, 10))
+    ids = np.array([1] * 10)                          # single GT room
+    pred = _row_pred(H, W, {1: range(0, 5), 2: range(5, 10)})  # split into two preds inside it
+    r = score_rooms_paper(pts, ids, pred, tf)
+    assert r['over_seg'] == 1 and r['under_seg'] == 0
+    assert r['detection_rate'] == pytest.approx(1.0)  # the room is still found
+
+
+def test_paper_under_segmentation_counted_once():
+    H, W = 3, 20
+    tf = _identity_transform(H, W)
+    pts = _row_points(range(0, 20))
+    ids = np.array([1] * 10 + [2] * 10)              # two GT rooms
+    pred = _row_pred(H, W, {1: range(0, 20)})        # one pred swallows both
+    r = score_rooms_paper(pts, ids, pred, tf)
+    assert r['under_seg'] == 1 and r['over_seg'] == 0
+    assert r['n_matched'] == 2                        # both GT rooms correspond to the one pred
+
+
+# ---------------------------------------------------------------------------
+# Harmonized comparison — fair filters + shared scaffold (research-fixes Task 05)
+# ---------------------------------------------------------------------------
+def _eval_cfg(**kw):
+    """Config with pixel_m=1.0 so a room of N px == N m^2 (easy thresholds)."""
+    base = dict(pixel_m=1.0, eval_profile='comparison',
+                eval_min_room_area_m2=4.0, eval_min_coverage_frac=0.5, min_wall_area_px=2)
+    base.update(kw)
+    return Config(**base)
+
+
+def _room_set(labels):
+    """The partition as a hashable set of room pixel-sets (ignores label *ids*)."""
+    labels = np.asarray(labels)
+    return frozenset(frozenset(np.flatnonzero(labels == r).tolist())
+                     for r in np.unique(labels) if r >= 1)
+
+
+def test_eval_wall_scaffold_drops_speckle_keeps_walls():
+    cfg = _eval_cfg(min_wall_area_px=5)
+    wm = np.zeros((10, 10), bool)
+    wm[:, 5] = True            # a real 10-px wall column
+    wm[0, 0] = True            # a 1-px speck (below min_wall_area_px=5)
+    scaf = eval_wall_scaffold(wm, cfg)
+    assert scaf[:, 5].all()    # wall kept
+    assert not scaf[0, 0]      # speck dropped
+    assert scaf.dtype == bool
+
+
+def test_harmonize_method_agnostic_same_room_set():
+    """Two methods that AGREE on the room interiors but differ in the incidentals harmonization
+    normalizes away — the wall scaffold and sub-threshold speckle — must yield the SAME
+    harmonized room set (the core Task 05 guarantee). The methods must not disagree on which
+    non-wall cell belongs to which room; harmonization unifies the scaffold, it does not
+    re-assign a cell one method genuinely carved out."""
+    cfg = _eval_cfg()
+    walls = np.zeros((10, 10), bool); walls[:, 5] = True          # canonical scaffold = col 5
+    cov = np.ones((10, 10), bool)
+
+    # Method A: treats col 5 as wall (-1).
+    A = np.zeros((10, 10), np.int32)
+    A[:, :5] = 1; A[:, 6:] = 2; A[:, 5] = -1
+
+    # Method B: SAME interiors, but did NOT call col 5 a wall (left room spills onto it) and
+    # carries a 1-px speckle room sitting on the scaffold line (gets normalized to -1).
+    B = np.zeros((10, 10), np.int32)
+    B[:, :6] = 1; B[:, 6:] = 2; B[0, 5] = 3
+
+    hA = harmonize_room_labels(A, cov, walls, cfg)
+    hB = harmonize_room_labels(B, cov, walls, cfg)
+    assert _room_set(hA) == _room_set(hB)                         # identical room sets
+    assert np.array_equal(hA == -1, hB == -1)                    # identical shared -1 scaffold
+    assert (hA[:, 5] == -1).all() and (hB[:, 5] == -1).all()     # canonical wall imposed on both
+    assert 3 not in np.unique(hB)                                # B's speckle gone (on scaffold)
+
+
+def test_harmonize_is_deterministic():
+    cfg = _eval_cfg()
+    walls = np.zeros((8, 8), bool); walls[:, 4] = True
+    cov = np.ones((8, 8), bool)
+    lab = np.zeros((8, 8), np.int32); lab[:, :4] = 1; lab[:, 5:] = 2; lab[walls] = -1
+    first = harmonize_room_labels(lab, cov, walls, cfg)
+    for _ in range(3):
+        assert np.array_equal(harmonize_room_labels(lab, cov, walls, cfg), first)
+
+
+def test_harmonize_drops_subthreshold_and_void_rooms():
+    cfg = _eval_cfg(eval_min_room_area_m2=4.0, eval_min_coverage_frac=0.5)
+    walls = np.zeros((10, 10), bool)
+    cov = np.ones((10, 10), bool)
+    lab = np.zeros((10, 10), np.int32)
+    lab[0:5, 0:5] = 1            # 25-px room -> kept
+    lab[0, 9] = 2               # 1-px room  -> below 4 m^2, dropped
+    lab[7:10, 7:10] = 3         # 9-px room  -> area-OK but we'll make it void
+    cov[7:10, 7:10] = False     # room 3 sits over NO coverage -> void-dropped
+    h = harmonize_room_labels(lab, cov, walls, cfg)
+    assert sorted(int(x) for x in np.unique(h) if x >= 1) == [1]   # only the big covered room
+    # relabelled compactly to 1..k
+    assert set(int(x) for x in np.unique(h) if x >= 1) == {1}
+
+
+def test_harmonize_paper_profile_passes_through_unchanged():
+    cfg = _eval_cfg(eval_profile='paper')
+    walls = np.zeros((6, 6), bool); walls[:, 3] = True
+    cov = np.ones((6, 6), bool)
+    lab = np.zeros((6, 6), np.int32); lab[:, 0] = -1; lab[0, 0] = 0; lab[2:4, 4:6] = 7
+    out = harmonize_room_labels(lab, cov, walls, cfg)
+    assert np.array_equal(out, lab)        # faithful: no filtering, no scaffold, no relabel

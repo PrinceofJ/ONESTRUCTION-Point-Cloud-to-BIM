@@ -116,7 +116,7 @@ that the reloaded cloud lands inside the upstream raster (`assert_points_in_grid
 #### `preprocessing/notebook_1_occupancy_raster`  (`stage1_occupancy`)
 - **Does:** load cloud → slab crop → rasterise. Behaviour identical to the original.
 - **In:** point cloud at `CFG.file_path`.
-- **Out:** `occupancy.png`, `wall_mask.npy`, `wallness.npy`, `coverage.npy`,
+- **Out:** `occupancy.png`, `wall_mask.npy`, `coverage.npy`,
   `transform.json`, `config.json`.
 
 ### Method 1 — geometric (`methods/geometric/`)
@@ -124,15 +124,14 @@ that the reloaded cloud lands inside the upstream raster (`assert_points_in_grid
 #### `notebook_1_watershed`  (`stage2_watershed`)
 - **Does:** the original deterministic distance-transform watershed, unchanged, relocated
   into `segment_rooms_watershed`.
-- **In:** `wall_mask.npy` (or `wallness.npy` if `use_wallness`), `coverage.npy`,
-  `transform.json` from stage 1.
+- **In:** `wall_mask.npy`, `coverage.npy`, `transform.json` from stage 1.
 - **Out:** `room_labels.npy` (`-1` wall / `0` exterior / `≥1` rooms),
   `room_labels_color.png`, `walls.npy`, `footprint.npy`, `transform.json`, `config.json`.
 
 #### `notebook_2_wall_assignment`  (`stage3_walls`)
 - **Does:** the **boundary-ring** wall assignment on the **watershed** masks, then
   back-projection to 3-D.
-- **In:** `wallness.npy` + `transform.json` (stage 1), `room_labels.npy` (stage 2), and the
+- **In:** `wall_mask.npy` + `transform.json` (stage 1), `room_labels.npy` (stage 2), and the
   point cloud (reloaded with the original loader).
 - **Out:** `room_XX_walls.ply` per room, `room_wall_masks.npz`, `room_labels.npy`,
   `transform.json`, `config.json`.
@@ -153,7 +152,7 @@ arrays (`tests/test_sam_auto.py`) — the same model/math split as `sam_refine`.
   and — when enabled in `params.yaml` — does corridor reprocessing (`sam_reprocess_residual`,
   paper §4.2) and/or the outward boundary buffer (`sam_auto_buffer_rooms`, paper `do`). SAM's
   Table-1 params are `Config` fields (`sam_points_per_side`, `sam_pred_iou_thresh`, …).
-- **In:** `occupancy.png`, `wallness.npy`, `coverage.npy`, `transform.json` (stage 1); a SAM
+- **In:** `occupancy.png`, `wall_mask.npy`, `coverage.npy`, `transform.json` (stage 1); a SAM
   checkpoint. **Requires a real SAM backend** — fails loudly on no GPU/checkpoint
   (`debug['ran']` is False) rather than passing through; pure-SAM with no SAM is meaningless.
 - **Out:** `room_labels.npy` (Stage-1 grid), `room_labels_color.png`, `transform.json`,
@@ -163,7 +162,7 @@ arrays (`tests/test_sam_auto.py`) — the same model/math split as `sam_refine`.
 - **Does:** the identical boundary-ring assignment (`room_wall_masks_boundary_ring`), on the
   SAM-method masks from `stage_sam_auto`. Same call as the geometric method — only the mask
   source differs — then back-projects within the floor↔ceiling band.
-- **In:** `wallness.npy` + `transform.json` (stage 1), `room_labels.npy` (`stage_sam_auto`),
+- **In:** `wall_mask.npy` + `transform.json` (stage 1), `room_labels.npy` (`stage_sam_auto`),
   the point cloud.
 - **Out:** same artifact set as the geometric wall-assignment, to `stage_sam_walls/`.
 
@@ -182,7 +181,7 @@ arrays (`tests/test_sam_auto.py`) — the same model/math split as `sam_refine`.
   model-agnostic `MaskGenerator` (default backend SAM2). Confidence × geometry gated and
   snapped to the wall scaffold. Passes the watershed labels through unchanged if no SAM
   backend/checkpoint is available (never fabricates masks).
-- **In:** `occupancy.png`, `wallness.npy`, `coverage.npy` (stage 1); `room_labels.npy`,
+- **In:** `occupancy.png`, `wall_mask.npy`, `coverage.npy` (stage 1); `room_labels.npy`,
   `walls.npy`, `footprint.npy`, `config.json` (`stage2_watershed` — see the wiring note above);
   a SAM 2.1 checkpoint.
 - **Out:** `room_labels_refined.npy`, `room_labels_refined_color.png`, `transform.json`,
@@ -192,7 +191,7 @@ arrays (`tests/test_sam_auto.py`) — the same model/math split as `sam_refine`.
 - **Does:** the identical boundary-ring assignment, but on the **SAM-refined** masks
   (`room_labels_refined.npy`) from stage 4. **Fails loudly** if stage 4 is absent ("run the
   SAM-refinement notebook first") — never falls back to the watershed masks.
-- **In:** `wallness.npy` + `transform.json` (stage 1), `room_labels_refined.npy` (stage 4),
+- **In:** `wall_mask.npy` + `transform.json` (stage 1), `room_labels_refined.npy` (stage 4),
   the point cloud.
 - **Out:** same artifact set as the geometric wall-assignment, to `stage5_walls_sam_refined/`.
 
@@ -208,8 +207,7 @@ wall-assignment (`stage_sam_auto → stage_sam_walls`, mirroring G's two-stage s
 | Artifact (stage)                                  | Produced by | Consumed by                         |
 |---------------------------------------------------|-------------|-------------------------------------|
 | `transform.json` (stage1)                         | Pre         | every later stage                   |
-| `wall_mask.npy` (stage1)                          | Pre         | G·ws, GS·ws                         |
-| `wallness.npy` (stage1)                           | Pre         | G·wa, GS·ref, GS·wa                 |
+| `wall_mask.npy` (stage1)                          | Pre         | G·ws, GS·ws, G·wa, GS·ref, GS·wa, S·* |
 | `coverage.npy` (stage1)                           | Pre         | G·ws, GS·ws, GS·ref                 |
 | `occupancy.png` (stage1)                          | Pre         | GS·ref                              |
 | `room_labels.npy` (stage2_watershed)              | G·ws        | G·wa, GS·ref                        |
@@ -256,11 +254,12 @@ the points there.
 
 **New (`room_wall_masks_boundary_ring`):** for each room mask `M_i`:
 `I_i = erode(M_i)` → `B_i = M_i \ I_i` → `B_i' = dilate(B_i, r_w)` →
-`walls_i = B_i' ∩ wallness`; back-project those pixels.
+`walls_i = B_i' ∩ wall_mask`; back-project those pixels.
 
 Two differences that matter:
-1. **Wall source is the `wallness` raster** (vertical-extent, furniture-suppressed) rather
-   than the post-segmentation occupancy wall pixels.
+1. **Wall source is the slab `wall_mask`** (binary slab-occupancy wall pixels) — the same
+   deterministic, method-agnostic raster every method shares (research-fixes Task 03/05). It
+   replaced an earlier span-based `wallness` raster that saturated room interiors.
 2. **Geometry is a boundary ring**, not the whole dilated interior — tighter, less prone to
    grabbing a neighbouring room's wall.
 
@@ -278,7 +277,7 @@ prior and SAM only adjusts topology where it is confident and the geometry is we
 
 **Pipeline (`scan2bim.sam_refine.refine_with_sam`):**
 1. **SAM input image** (`build_sam_image`): stack the three Stage-1 rasters as channels —
-   occupancy (free space) / wallness (structure) / coverage (scanned data). A realistic
+   occupancy (free space) / slab wall mask (structure) / coverage (scanned data). A realistic
    top-down built from data already computed; no point cloud needed in this stage. (The
    colourised label map is QA-only and never fed to SAM.)
 2. **Prompt per watershed room:** positive points from the room's *eroded* interior (the
@@ -343,9 +342,6 @@ imports in `_build_sam3`; nothing else changes.
 - The legacy `room_footprints` / `split_rooms_to_clouds` and the legacy door/endpoint
   bridging are retained only for the legacy debug overlay — drop once the new method is
   accepted.
-- `rasterize_wallness` over-flags cells (it measures vertical span over *all* points in a
-  cell, so floor+ceiling returns flag nearly everywhere); this is a separate algorithm issue
-  left for a follow-up — the cleanup refactor changed plumbing only.
 - The prompted-SAM gating thresholds (`sam_conf_thresh`, `sam_merge_cover_frac`, …) are
   conservative defaults; calibrate them once a labelled set exists.
 

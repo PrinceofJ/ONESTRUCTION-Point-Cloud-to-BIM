@@ -164,12 +164,12 @@ def test_pass_through_when_no_backend_builds():
 def test_build_sam_image_stacks_three_rasters():
     h, w = 10, 12
     occ = np.full((h, w), 255, np.uint8); occ[:, 0] = 0   # one wall column
-    wallness = np.zeros((h, w), bool); wallness[:, 0] = True
+    wall_mask = np.zeros((h, w), bool); wall_mask[:, 0] = True
     coverage = np.ones((h, w), bool)
-    img = build_sam_image(occ, wallness, coverage, mode='stack')
+    img = build_sam_image(occ, wall_mask, coverage, mode='stack')
     assert img.shape == (h, w, 3) and img.dtype == np.uint8
     assert (img[:, 0, 0] == 0).all()                    # ch0 = free space (wall col is 0)
-    assert (img[:, 0, 1] == 255).all()                  # ch1 = wallness (wall col is 255)
+    assert (img[:, 0, 1] == 255).all()                  # ch1 = wall mask (wall col is 255)
     assert (img[..., 2] == 255).all()                   # ch2 = coverage (all scanned)
 
 
